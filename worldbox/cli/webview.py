@@ -211,6 +211,7 @@ class LiveState:
                     "minds": stats.ai_minds,
                     "thinking": stats.ai_thinking,
                     "usage": engine.minds.usage_snapshot(),
+                    "paused": engine.minds.paused,
                     "tribes": minds,
                     "houses": houses,
                 },
@@ -313,6 +314,8 @@ class LiveState:
         """
         from ..ai import narrator
 
+        if self.engine.minds.paused:
+            return {"ok": False, "error": "LLM calls are switched off. Turn AI on to ask for a history."}
         if not narrator.is_available():
             return {"ok": False, "error":
                     "No API key. Put DEEPSEEK_API_KEY or OPENAI_API_KEY in .env or export it."}
@@ -603,7 +606,15 @@ class LiveState:
             return {"kind": kind, "rows": rows}
 
     def control(self, action: str, value: Optional[str]) -> Dict[str, Any]:
-        """Pause, resume or set the speed from the browser."""
+        """Pause, resume, set the speed, or switch LLM calls from the browser.
+
+        ``ai`` with ``on``/``off``/``toggle`` stops or resumes every LLM call
+        (tribe minds and narrator) while the world keeps running; ``ai_cap``
+        sets calls per minute (empty value = back to .env/config);
+        ``ai_forget`` puts every tribe back on the plain rules.
+        """
+        minds = self.engine.minds
+        result: Dict[str, Any] = {}
         if action == "pause":
             self.runner.pause()
         elif action == "resume":
@@ -613,7 +624,32 @@ class LiveState:
                 self.runner.set_delay(float(value))
             except ValueError:
                 pass
-        return {"running": self.runner.running, "delay": self.runner.delay}
+        elif action == "ai":
+            choice = (value or "toggle").strip().lower()
+            if choice in ("on", "off"):
+                minds.set_paused(choice == "off")
+            else:
+                minds.set_paused(not minds.paused)
+            with self.runner.lock:
+                self.engine.events.record(
+                    self.engine.clock.day, EventKind.SYSTEM,
+                    "LLM calls switched " + ("off" if minds.paused else "on"),
+                )
+        elif action == "ai_cap":
+            try:
+                minds.set_call_cap(None if value in (None, "") else max(0, min(120, int(float(value)))))
+            except ValueError:
+                pass
+        elif action == "ai_forget":
+            with self.runner.lock:
+                result["forgotten"] = minds.forget_policies()
+        result.update({
+            "running": self.runner.running,
+            "delay": self.runner.delay,
+            "aiPaused": minds.paused,
+            "aiCap": minds.call_cap(),
+        })
+        return result
 
 
 def _handler_factory(state: LiveState, page_loader):

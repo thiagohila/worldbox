@@ -415,6 +415,10 @@ class MindDirector:
         self._skips: Dict[int, int] = {}
         self._recent_calls: "deque[float]" = deque()
         self.halted: str = ""  # Set on a rejected key or unknown model.
+        # Runtime switches, set while the game runs (HUD, terminal). They are
+        # player settings, so a world reset keeps them.
+        self.paused: bool = False  # No new calls; current policies stay.
+        self._cap_override: Optional[int] = None
         self.usage: Dict[str, int] = {}
         self._reset_usage()
 
@@ -459,8 +463,39 @@ class MindDirector:
         """
         from .client import env_number
 
+        if self._cap_override is not None:
+            return self._cap_override
         override = env_number("LLM_MAX_CALLS_PER_MINUTE")
         return int(override) if override is not None and override >= 0 else self.config.max_calls_per_minute
+
+    # -- runtime controls ---------------------------------------------------
+
+    def set_paused(self, paused: bool) -> None:
+        """Stop or resume LLM calls while the game runs.
+
+        Paused, no new call starts (calls already in flight still land);
+        tribes keep their current policies. Use :meth:`forget_policies` to
+        put them back on the plain rules as well.
+        """
+        self.paused = bool(paused)
+
+    def set_call_cap(self, calls_per_minute: Optional[int]) -> None:
+        """Override the per-minute ceiling at runtime; None goes back to .env/config."""
+        self._cap_override = None if calls_per_minute is None else max(0, int(calls_per_minute))
+
+    def forget_policies(self) -> int:
+        """Drop every tribe's policy so they all play by the rules again.
+
+        Returns how many were dropped. The minds think again later unless
+        paused; nothing else (usage, halt state) is touched.
+        """
+        with self._lock:
+            dropped = len(self.policies)
+            self.policies.clear()
+            self.last_thought.clear()
+            self._signatures.clear()
+            self._skips.clear()
+        return dropped
 
     def calls_last_minute(self) -> int:
         """API calls started in the last 60 real seconds."""
@@ -474,6 +509,7 @@ class MindDirector:
         row: Dict[str, Any] = dict(self.usage)
         row["per_minute"] = self.calls_last_minute()
         row["cap"] = self.call_cap()
+        row["paused"] = self.paused
         row["halted"] = self.halted
         return row
 
@@ -529,6 +565,8 @@ class MindDirector:
         if not self.available():
             return
         self._nudge_diplomacy(engine)
+        if self.paused:
+            return  # Policies keep acting; no new thoughts are asked for.
         self._schedule(engine, day)
 
     def _pool_or_start(self) -> ThreadPoolExecutor:

@@ -473,6 +473,9 @@ Commands
   towns              Every settlement and its granary
   chronicle [n]      The permanent history of the world (default 30)
   minds              What each tribe AI has decided to do
+  ai [on|off]        Switch LLM calls on/off while the world runs (no arg: status)
+  ai cap <n>         LLM calls per minute for all minds ('ai cap' alone: default)
+  ai forget          Put every tribe back on the plain rules
   narrate            Have an AI write up the chronicle as a history
   livemap            Open a browser map that updates as the simulation runs
   view [days]        Build a recorded map of the run so far and open it
@@ -517,6 +520,7 @@ class Terminal:
             "settlements": self.cmd_towns,
             "chronicle": self.cmd_chronicle,
             "minds": self.cmd_minds,
+            "ai": self.cmd_ai,
             "narrate": self.cmd_narrate,
             "export": self.cmd_export,
             "view": self.cmd_view,
@@ -710,8 +714,38 @@ class Terminal:
         with self.runner.lock:
             print(render_minds(self.engine))
 
+    def cmd_ai(self, args: List[str]) -> None:
+        """Switch LLM calls on or off, set their rate, or forget all policies."""
+        minds = self.engine.minds
+        word = args[0].lower() if args else ""
+        if word in ("on", "off"):
+            minds.set_paused(word == "off")
+        elif word == "cap":
+            if len(args) > 1:
+                cap = self._parse_int(args[1:], "calls per minute", default=minds.call_cap())
+                minds.set_call_cap(max(0, cap))
+            else:
+                minds.set_call_cap(None)
+        elif word == "forget":
+            with self.runner.lock:
+                dropped = minds.forget_policies()
+            print(f"{dropped} tribe policies forgotten; tribes play by the rules again.")
+        elif word:
+            print("Usage: ai [on|off] | ai cap [n] | ai forget")
+            return
+        usage = minds.usage_snapshot()
+        state = "OFF" if minds.paused else ("stopped: " + minds.halted if minds.halted else "on")
+        print(
+            f"LLM calls {state} | cap {usage['cap']}/min | calls {usage['calls']} "
+            f"skipped {usage['skipped']} failed {usage['failures']} | "
+            f"tokens {usage['tokens_in'] + usage['tokens_out']:,}"
+        )
+
     def cmd_narrate(self, args: List[str]) -> None:
         """Ask an AI to write the world's chronicle up as a history."""
+        if self.engine.minds.paused:
+            print("LLM calls are switched off. 'ai on' to turn them back on.")
+            return
         if not ai_narrator.is_available():
             print(
                 f"Narration needs an API key. Put DEEPSEEK_API_KEY or OPENAI_API_KEY in .env\n"

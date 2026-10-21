@@ -77,6 +77,12 @@ label{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.12em
 .seg span{font-family:var(--mono);font-size:11px;color:var(--ink2);min-width:38px;text-align:center;font-variant-numeric:tabular-nums}
 #playBtn{width:38px;height:36px;padding:0;font-size:13px;display:flex;align-items:center;justify-content:center}
 #playBtn.paused{background:#2D2410;border-color:#7A5E1E;color:var(--invention)}
+#aiBtn{height:36px;padding:0 11px;font-family:var(--mono);font-size:11px;letter-spacing:.06em;
+  background:rgba(134,188,255,.10);border-color:#2F4A6E;color:var(--mind)}
+#aiBtn.off{background:var(--panel2);border-color:var(--line);color:var(--ink3);text-decoration:line-through}
+#aiBtn.none{opacity:.45}
+.aictl{display:flex;align-items:center;gap:6px;margin-top:7px}
+.aictl button{padding:2px 8px;font-family:var(--mono);font-size:10.5px}
 
 /* ---------- left toolbar ---------- */
 #tools{top:70px;left:10px;width:58px;padding:6px;display:flex;flex-direction:column;gap:4px}
@@ -201,6 +207,7 @@ h3{margin:0;font-size:16px}
   <div class="stats" id="stats"></div>
   <div class="spacer"></div>
   <div class="ctl">
+    <button id="aiBtn" title="LLM calls on/off while the world runs (M)">AI</button>
     <button id="playBtn" title="Pause / resume (Space)">❚❚</button>
     <div class="seg" id="speeds" title="Simulation speed ( [ and ] )">
       <button data-delay="0.25">½×</button><button class="on" data-delay="0.06">1×</button>
@@ -931,11 +938,33 @@ $("logToggle").addEventListener("click",function(){var p=$("log");p.classList.to
   this.textContent=p.classList.contains("collapsed")?"show":"hide"});
 function togglePlay(){fetch("/control?action="+(running?"pause":"resume")).then(poll)}
 $("playBtn").addEventListener("click",togglePlay);
+
+/* ---- LLM controls: switch calls off/on, rate, forget policies ---- */
+var aiPaused=false,aiCap=null;
+function aiControl(action,value){
+  return fetch("/control?action="+action+(value!==undefined?"&value="+encodeURIComponent(value):""))
+    .then(function(r){return r.json()}).then(function(d){aiPaused=d.aiPaused;aiCap=d.aiCap;syncAi();
+      if(action==="ai")toast("mind","LLM",aiPaused?"LLM calls switched OFF — tribes keep their last decisions.":"LLM calls switched ON.","mind");
+      if(action==="ai_forget")toast("mind","LLM",(d.forgotten||0)+" tribe decisions forgotten — back to the plain rules.","mind");
+      return poll()});
+}
+function syncAi(available){var b=$("aiBtn");
+  b.classList.toggle("off",aiPaused);b.textContent=aiPaused?"AI off":"AI on";
+  if(available!==undefined){b.classList.toggle("none",!available);
+    b.title=available?"LLM calls on/off while the world runs (M)":"No LLM source configured (.env)"}}
+$("aiBtn").addEventListener("click",function(){aiControl("ai","toggle")});
+$("minds").addEventListener("click",function(e){var t=e.target.closest("[data-ai]");if(!t)return;e.stopPropagation();
+  var a=t.dataset.ai;
+  if(a==="on"||a==="off")aiControl("ai",a);
+  else if(a==="cap-")aiControl("ai_cap",Math.max(0,(aiCap||0)-1));
+  else if(a==="cap+")aiControl("ai_cap",(aiCap||0)+1);
+  else if(a==="forget")aiControl("ai_forget");});
 addEventListener("keydown",function(e){
   if(/INPUT|SELECT|TEXTAREA/.test(e.target.tagName))return;
   var k=e.key;
   if(k==="Escape"){setTool(null);return}
   if(k===" "){e.preventDefault();togglePlay();return}
+  if(k==="m"||k==="M"){aiControl("ai","toggle");return}
   if(k>="1"&&k<="6"){var b=document.querySelector('.tl[data-k="'+k+'"]');setTool(tool===b.dataset.tool?null:b.dataset.tool);return}
   if(k==="n"||k==="N"){setTool(null,!planting);return}
   if(k==="l"||k==="L"){var ls=["none","territory","fertility","food"];setLayer(ls[(ls.indexOf(layer)+1)%4]);return}
@@ -1044,6 +1073,7 @@ function quick(s){
   showCivs(s.civs||[]);showMinds(s.ai);showDiscoveries(s.discoveries);
   if(s.houses&&s.houses.length)fillHouses(s.houses);
   var pb=$("playBtn");pb.textContent=s.running?"❚❚":"▶";pb.classList.toggle("paused",!s.running);
+  if(s.ai){aiPaused=!!s.ai.paused;aiCap=s.ai.usage?s.ai.usage.cap:aiCap;syncAi(!!s.ai.available)}
   $("miniInfo").textContent=W+"×"+H;
 }
 
@@ -1129,10 +1159,14 @@ function showMinds(ai){
   if(!rows.length){el.innerHTML='<div class="empty">Waiting for tribes to form, or plant one yourself.</div>';return}
   var u=ai.usage||{},tokTotal=(u.tokens_in||0)+(u.tokens_out||0);
   var usageLine='<div class="card" style="font-family:var(--mono);font-size:10.5px;color:var(--ink2)">'+
+    (u.paused?'<div style="color:var(--warn);margin-bottom:4px">LLM calls are OFF — tribes keep their last decisions. Press <span class="kbd">M</span> or the AI button to resume.</div>':'')+
     (u.halted?'<div style="color:var(--bad);margin-bottom:4px">Minds stopped: '+esc(u.halted)+'</div>':'')+
     'API calls <b style="color:var(--ink)">'+(u.calls||0)+'</b> · '+(u.per_minute||0)+'/'+(u.cap!=null?u.cap:'?')+' per min · skipped '+(u.skipped||0)+
     ' · failed '+(u.failures||0)+'<br>tokens '+tokTotal.toLocaleString()+' (in '+(u.tokens_in||0).toLocaleString()+
-    ', out '+(u.tokens_out||0).toLocaleString()+(u.tokens_cached?', cached '+u.tokens_cached.toLocaleString():'')+')</div>';
+    ', out '+(u.tokens_out||0).toLocaleString()+(u.tokens_cached?', cached '+u.tokens_cached.toLocaleString():'')+')'+
+    '<div class="aictl"><button data-ai="'+(u.paused?'on':'off')+'">'+(u.paused?'Turn AI on':'Turn AI off')+'</button>'+
+    '<span>cap</span><button data-ai="cap-">−</button><b style="color:var(--ink)">'+(u.cap!=null?u.cap:'?')+'</b><button data-ai="cap+">+</button><span>/min</span>'+
+    '<button data-ai="forget" title="Drop every policy: tribes play by the plain rules until they think again">Forget decisions</button></div></div>';
   el.innerHTML=usageLine+'<div class="sub" style="margin-bottom:8px">'+(ai.thinking?ai.thinking+" thinking · ":"")+ai.minds+' minds live</div>'+
     rows.map(function(t){var col=tribeColour(t.color)||"#888";
     var st=t.thinking?'<span class="meta" style="font-style:italic">thinking…</span>':t.stance?'<span class="stance">'+esc(t.stance)+'</span>':t.error?'':'<span class="meta">waiting</span>';
