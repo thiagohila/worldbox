@@ -12,8 +12,9 @@ without crashing the simulation.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from ..simulation.chronicle import ChronicleEntry
 from .client import DEFAULT_MODEL, ENV_KEY, OPENAI_ENV_KEY, ChatResult, api_key, chat, is_available
@@ -27,6 +28,7 @@ __all__ = [
     "format_chronicle",
     "is_available",
     "narrate",
+    "usage_snapshot",
     "wrap",
 ]
 
@@ -109,7 +111,27 @@ def narrate(
         json_mode=False,
         thinking=False,
     )
+    _count(result)
     return Narration.from_chat(result)
+
+
+# Narration requests made by this process, for anyone reporting LLM use.
+_USAGE_LOCK = threading.Lock()
+_USAGE: Dict[str, int] = {"calls": 0, "failures": 0, "tokens_in": 0, "tokens_out": 0}
+
+
+def _count(result: ChatResult) -> None:
+    with _USAGE_LOCK:
+        _USAGE["calls"] += 1
+        _USAGE["failures"] += 0 if result.ok else 1
+        _USAGE["tokens_in"] += result.tokens_in
+        _USAGE["tokens_out"] += result.tokens_out
+
+
+def usage_snapshot() -> Dict[str, int]:
+    """Narration calls, failures and tokens so far in this process."""
+    with _USAGE_LOCK:
+        return dict(_USAGE)
 
 
 def wrap(text: str, width: int = 76) -> List[str]:

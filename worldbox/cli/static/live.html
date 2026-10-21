@@ -161,6 +161,20 @@ h3{margin:0;font-size:16px}
 .disc .name{color:var(--invention);font-weight:600}
 .disc .why{color:var(--ink2);font-size:12px;margin-top:3px;line-height:1.4}
 
+/* ---------- extension chat panels ---------- */
+.pane.chatpane.on{display:flex;flex-direction:column;padding:0}
+.chatlog{flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.msg{max-width:88%;padding:7px 10px;border-radius:8px;font-size:12.5px;line-height:1.45;white-space:pre-wrap;word-wrap:break-word}
+.msg .who{display:block;font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);margin-bottom:2px}
+.msg.player{align-self:flex-end;background:var(--accent2);border:1px solid #1F5A54;color:var(--ink)}
+.msg.character{align-self:flex-start;background:var(--panel2);border:1px solid var(--line2)}
+.msg.system{align-self:center;background:none;color:var(--ink3);font-style:italic;font-size:11.5px;text-align:center}
+.msg.pending{opacity:.65}
+.chatsub{padding:8px 12px 0;font-family:var(--mono);font-size:10px;color:var(--ink3)}
+.chatin{display:flex;gap:6px;padding:8px 10px 10px;border-top:1px solid var(--line)}
+.chatin input{flex:1}
+.chatin button{flex:none}
+
 /* ---------- log ---------- */
 #log{bottom:10px;left:10px;width:470px;max-width:calc(100vw - 230px)}
 .filters{display:flex;gap:4px;flex-wrap:wrap}
@@ -665,6 +679,10 @@ function buildTerrain(){
    View
    ===================================================================== */
 function resize(){var d=window.devicePixelRatio||1;
+  /* The side panel ends above the minimap, whatever height the world's
+     aspect gives it; otherwise the minimap covers the panel's bottom (and a
+     chat panel's input box). */
+  var mp=$("mini");if(mp&&mp.offsetHeight)$("right").style.bottom=(mp.offsetHeight+18)+"px";
   cv.width=Math.round(innerWidth*d);cv.height=Math.round(innerHeight*d);
   ctx.setTransform(d,0,0,d,0,0);ctx.imageSmoothingEnabled=false;render()}
 function fit(){scale=Math.max(2,Math.min(innerWidth/W,(innerHeight-40)/H));
@@ -1196,6 +1214,51 @@ $("explain").addEventListener("click",function(){
       return "<p>"+esc(p.replace(/\*\*/g,"").replace(/^#+\s*/,""))+"</p>"}).join("")})
   .catch(function(){el.innerHTML='<p class="hint">Could not reach the simulation.</p>'})});
 
+/* ---- extension panels: logic lives outside the game (LiveState.add_extension) ---- */
+var WB_TOKEN="__WB_TOKEN__",chats={};
+function extFetch(path,body){
+  var opt={headers:{"X-Worldbox-Token":WB_TOKEN}};
+  if(body!==undefined){opt.method="POST";opt.headers["Content-Type"]="application/json";opt.body=JSON.stringify(body)}
+  return fetch(path,opt).then(function(r){return r.json()});
+}
+function loadExtensions(){
+  extFetch("/ext").then(function(d){(d.extensions||[]).forEach(function(x){if(x.kind==="chat")addChat(x)})}).catch(function(){});
+}
+function addChat(x){
+  var id=x.id,tab=document.createElement("button");
+  tab.className="tab";tab.dataset.pane="ext_"+id;
+  tab.innerHTML=esc(x.title||id)+'<span class="dot" id="dot_'+id+'"></span>';
+  var hist=document.querySelector('.tab[data-pane="hist"]');hist.parentNode.insertBefore(tab,hist);
+  tab.addEventListener("click",function(){showPane(tab.dataset.pane);$("dot_"+id).classList.remove("show");scrollChat(id)});
+  var pane=document.createElement("div");pane.className="pane chatpane";pane.id="ext_"+id;
+  pane.innerHTML=(x.subtitle?'<div class="chatsub">'+esc(x.subtitle)+'</div>':'')+
+    '<div class="chatlog" id="log_'+id+'"></div>'+
+    '<form class="chatin" id="form_'+id+'"><input id="in_'+id+'" maxlength="'+(x.maxLength||600)+'" placeholder="'+esc(x.placeholder||"Say something…")+'" autocomplete="off">'+
+    '<button type="submit">Send</button></form>';
+  $("right").appendChild(pane);
+  chats[id]={since:-1,seen:{}};
+  $("form_"+id).addEventListener("submit",function(e){e.preventDefault();
+    var inp=$("in_"+id),text=inp.value.trim();if(!text)return;inp.value="";
+    extFetch("/ext/"+id+"/send",{text:text}).then(function(d){if(d&&d.ok===false)toast("system",x.title||id,d.error||"Not sent.");pollChat(id)})
+      .catch(function(){toast("system",x.title||id,"Could not reach the game.")})});
+  pollChat(id);setInterval(function(){if(!document.hidden)pollChat(id)},1000);
+}
+function scrollChat(id){var l=$("log_"+id);if(l)l.scrollTop=l.scrollHeight}
+function pollChat(id){var c=chats[id];
+  return extFetch("/ext/"+id+"/messages?since="+c.since).then(function(d){if(!d||!d.ok)return;
+    var log=$("log_"+id),stick=log.scrollTop+log.clientHeight>=log.scrollHeight-20,fresh=false;
+    (d.messages||[]).forEach(function(m){
+      var el=c.seen[m.id];
+      if(!el){el=document.createElement("div");c.seen[m.id]=el;log.appendChild(el);if(m.role==="character")fresh=true}
+      el.className="msg "+(m.role||"system")+(m.pending?" pending":"");
+      el.innerHTML=(m.role!=="system"&&m.name?'<span class="who">'+esc(m.name)+(m.day!=null?' · '+fmtDay(m.day):'')+'</span>':'')+esc(m.text||(m.pending?"…":""));
+      if(!m.pending&&m.id>c.since)c.since=m.id;
+    });
+    if(fresh&&activePane!=="ext_"+id)$("dot_"+id).classList.add("show");
+    if(stick||fresh)scrollChat(id);
+  }).catch(function(){});
+}
+
 /* ---- data ---- */
 function loadOverlay(){fetch("/overlay?kind="+layer).then(function(r){return r.json()}).then(function(d){overlayRows=d.rows;render()})}
 var rateHist=[];
@@ -1227,7 +1290,7 @@ loadArt().then(function(){return fetch("/world")}).then(function(r){return r.jso
      the page claims 1x. */
   var onSpeed=SPEEDS.filter(function(b){return b.classList.contains("on")})[0];
   if(onSpeed)fetch("/control?action=speed&value="+onSpeed.dataset.delay);
-  resize();fit();emptyInspect();poll();setInterval(poll,500);
+  resize();fit();emptyInspect();poll();setInterval(poll,500);loadExtensions();
   setInterval(function(){if(layer!=="none")loadOverlay()},4000);
 });
 })();

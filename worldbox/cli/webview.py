@@ -14,12 +14,16 @@ Endpoints:
     GET /state       the current snapshot: agents, settlements, stats, log
     GET /control     pause, resume or change speed
     GET /sprites/<f> sprite sheets and their sprites.json, from static/sprites
+    GET /ext         panels registered from outside the game (LiveState.add_extension)
+    GET|POST /ext/<id>/<action>  calls into one of them (token + Host + Origin checked)
 """
 
 from __future__ import annotations
 
+import hmac
 import json
 import re
+import secrets
 import threading
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -48,6 +52,10 @@ ROLE_CODES: Dict[str, int] = {
     "elder": 6,
 }
 HOUSE_CODES: Dict[str, int] = {"": 0, "deepseek": 1, "openai": 2}
+
+EXTENSION_ID = re.compile(r"[a-z0-9_-]{1,32}")
+EXTENSION_PATH = re.compile(r"/ext/([a-z0-9_-]{1,32})/([a-z0-9_-]{1,32})")
+EXTENSION_MAX_BODY = 16 * 1024
 
 
 def _pack_look(agent: Any, is_chief: bool) -> int:
@@ -81,7 +89,60 @@ class LiveState:
         self.tribe_index: Dict[int, int] = {}
         self.log: List[Dict[str, Any]] = []
         self._next_index = 0
+        # Panels served by code outside the game (see add_extension). The
+        # token is handed to the page and required on every extension call,
+        # so another site open in the browser cannot drive them.
+        self.extensions: Dict[str, Any] = {}
+        self.token = secrets.token_urlsafe(18)
         engine.events.subscribe(self._on_event)
+
+    # -- extensions -----------------------------------------------------------
+
+    def add_extension(self, extension: Any) -> None:
+        """Register a panel whose logic lives outside the game.
+
+        An extension is any object with:
+
+        * ``id`` -- short name, ``[a-z0-9_-]``, used in ``/ext/<id>/<action>``;
+        * ``describe()`` -> dict for the HUD, e.g. ``{"title": "Advisor",
+          "kind": "chat", "placeholder": "..."}``; ``kind == "chat"`` gets the
+          HUD's built-in conversation panel;
+        * ``handle(action, payload)`` -> JSON-able dict. Chat panels call
+          ``messages`` (``{"since": id}``) and ``send`` (``{"text": ...}``).
+
+        ``handle`` runs on an HTTP thread without the simulation lock: take
+        ``runner.lock`` to read the world, and never hold it across a network
+        call. The game knows nothing else about extensions.
+        """
+        ext_id = str(getattr(extension, "id", ""))
+        if not EXTENSION_ID.fullmatch(ext_id):
+            raise ValueError(f"Extension id {ext_id!r} must match {EXTENSION_ID.pattern}")
+        self.extensions[ext_id] = extension
+
+    def extension_manifest(self) -> List[Dict[str, Any]]:
+        """What the HUD needs to build a tab for each extension."""
+        rows = []
+        for ext_id, extension in self.extensions.items():
+            try:
+                row = dict(extension.describe())
+            except Exception:  # A broken extension must not hide the others.
+                continue
+            row["id"] = ext_id
+            rows.append(row)
+        return rows
+
+    def call_extension(self, ext_id: str, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Hand one request to an extension; failures come back as JSON."""
+        extension = self.extensions.get(ext_id)
+        if extension is None:
+            return {"ok": False, "error": "No such extension."}
+        try:
+            result = extension.handle(action, payload)
+        except Exception as error:
+            return {"ok": False, "error": f"Extension '{ext_id}' failed ({type(error).__name__})."}
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "Extension returned no JSON object."}
+        return result
 
     def _on_event(self, event) -> None:
         """Keep a rolling window of notable events for the feed."""
@@ -669,15 +730,85 @@ def _handler_factory(state: LiveState, page_loader):
             self.end_headers()
             self.wfile.write(body)
 
-        def _json(self, payload: Dict[str, Any]) -> None:
-            self._send(json.dumps(payload).encode("utf-8"), "application/json")
+        def _json(self, payload: Dict[str, Any], status: int = 200) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        # Extension calls cost LLM time, so unlike the original routes they
+        # are guarded: the Host must be this server (DNS rebinding), a POST's
+        # Origin must be this page (CSRF), and the session token must come in
+        # a custom header -- which a foreign page cannot send without a CORS
+        # preflight this server never answers.
+        def _local_names(self) -> Tuple[str, ...]:
+            port = self.server.server_address[1]
+            return (f"127.0.0.1:{port}", f"localhost:{port}")
+
+        def _extension_allowed(self, require_origin: bool) -> bool:
+            if (self.headers.get("Host") or "").lower() not in self._local_names():
+                return False
+            origin = self.headers.get("Origin")
+            if require_origin and origin is not None and origin.lower() not in tuple(
+                f"http://{name}" for name in self._local_names()
+            ):
+                return False
+            given = self.headers.get("X-Worldbox-Token") or ""
+            return hmac.compare_digest(given, state.token)
+
+        def do_POST(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            match = EXTENSION_PATH.fullmatch(parsed.path)
+            try:
+                if match is None:
+                    self.send_error(404)
+                    return
+                if not self._extension_allowed(require_origin=True):
+                    self._json({"ok": False, "error": "Forbidden."}, status=403)
+                    return
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > EXTENSION_MAX_BODY:
+                    self._json({"ok": False, "error": "Request too large."}, status=413)
+                    return
+                raw = self.rfile.read(length) if length > 0 else b"{}"
+                try:
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    payload = None
+                if not isinstance(payload, dict):
+                    self._json({"ok": False, "error": "Body must be a JSON object."}, status=400)
+                    return
+                self._json(state.call_extension(match.group(1), match.group(2), payload))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception:
+                try:
+                    self._json({"ok": False, "error": "Server error."}, status=500)
+                except OSError:
+                    pass
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             query = parse_qs(parsed.query)
             try:
                 if parsed.path == "/":
-                    self._send(page_loader().encode("utf-8"), "text/html; charset=utf-8")
+                    page = page_loader().replace("__WB_TOKEN__", state.token)
+                    self._send(page.encode("utf-8"), "text/html; charset=utf-8")
+                elif parsed.path == "/ext":
+                    if not self._extension_allowed(require_origin=False):
+                        self._json({"ok": False, "error": "Forbidden."}, status=403)
+                    else:
+                        self._json({"ok": True, "extensions": state.extension_manifest()})
+                elif EXTENSION_PATH.fullmatch(parsed.path):
+                    match = EXTENSION_PATH.fullmatch(parsed.path)
+                    if not self._extension_allowed(require_origin=False):
+                        self._json({"ok": False, "error": "Forbidden."}, status=403)
+                    else:
+                        payload = {key: values[0] for key, values in query.items()}
+                        self._json(state.call_extension(match.group(1), match.group(2), payload))
                 elif parsed.path == "/world":
                     self._json(state.world())
                 elif parsed.path == "/state":
@@ -744,6 +875,10 @@ class LiveServer:
     def url(self) -> str:
         """Where the page is served."""
         return f"http://127.0.0.1:{self.port}/"
+
+    def add_extension(self, extension: Any) -> None:
+        """Register a HUD panel whose logic lives outside the game; see LiveState."""
+        self.state.add_extension(extension)
 
     def start(self) -> str:
         """Start serving in a background thread; returns the URL.
