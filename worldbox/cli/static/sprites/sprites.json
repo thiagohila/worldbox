@@ -1,0 +1,160 @@
+{
+  "regras": {
+    "fundo": "transparente",
+    "pixel": "1px por pixel de arte, sem suavização",
+    "contorno": "#16110d",
+    "ancora": "centro da base da célula"
+  },
+  "corTribo": {
+    "base": "#FF00FF",
+    "claro": "#FF80FF",
+    "escuro": "#A000A0"
+  },
+  "neutrosParaTrocar": {
+    "cabelo": "#5a3e2b",
+    "pele": "#e0aa80",
+    "peleSombra": "#b9825a"
+  },
+  "sheets": {
+    "people": {
+      "arquivo": "people.png",
+      "celula": [
+        9,
+        11
+      ],
+      "linhas": [
+        "Criança",
+        "Coletor",
+        "Fazendeiro",
+        "Guerreiro",
+        "Estudioso",
+        "Curandeiro",
+        "Ancião"
+      ],
+      "colunas": [
+        "Parado",
+        "Andando 1",
+        "Andando 2"
+      ],
+      "ancora": [
+        4,
+        10
+      ],
+      "corpo": "colunas 2–6; 0–1 e 7–8 para objetos"
+    },
+    "overlays": {
+      "arquivo": "overlays.png",
+      "celula": [
+        9,
+        11
+      ],
+      "colunas": [
+        "Coroa",
+        "Doença",
+        "Ferimento"
+      ],
+      "alinhamento": "mesma célula do adulto em people.png",
+      "crianca": "deslocar +3 px no Y (cabeça da criança começa na linha 4)"
+    },
+    "buildings": {
+      "arquivo": "buildings.png",
+      "celula": [
+        36,
+        17
+      ],
+      "linhas": [
+        "Acampamento",
+        "Aldeia",
+        "Vila",
+        "Cidade pequena",
+        "Cidade"
+      ],
+      "colunas": [
+        "Quadro 1",
+        "Quadro 2 (fogo/fumaça)"
+      ],
+      "ancora": [
+        18,
+        16
+      ],
+      "alinhamento": "prédio encostado embaixo e centralizado",
+      "bbox_na_celula": {
+        "acampamento": {
+          "x": 10,
+          "y": 10,
+          "w": 14,
+          "h": 7
+        },
+        "aldeia": {
+          "x": 8,
+          "y": 6,
+          "w": 20,
+          "h": 11
+        },
+        "vila": {
+          "x": 6,
+          "y": 5,
+          "w": 25,
+          "h": 12
+        },
+        "cidade_pequena": {
+          "x": 3,
+          "y": 2,
+          "w": 30,
+          "h": 15
+        },
+        "cidade": {
+          "x": 0,
+          "y": 0,
+          "w": 36,
+          "h": 17
+        }
+      }
+    },
+    "terrain": {
+      "arquivo": "terrain.png",
+      "celula": [
+        8,
+        8
+      ],
+      "linhas": [
+        "Água rasa",
+        "Água média",
+        "Água funda",
+        "Grama",
+        "Floresta",
+        "Montanha"
+      ],
+      "colunas": [
+        "Var. 1",
+        "Var. 2",
+        "Var. 3",
+        "Var. 1 · quadro 2",
+        "Var. 2 · quadro 2",
+        "Var. 3 · quadro 2"
+      ],
+      "obs": "Tiles opacos e sem contorno (emendam sem costura). Quadro 2 só difere na água; nos demais é cópia."
+    },
+    "props": {
+      "arquivo": "props.png",
+      "celula": [
+        12,
+        16
+      ],
+      "colunas": [
+        "Árvore",
+        "Pinheiro",
+        "Pedra",
+        "Plantação",
+        "Faísca",
+        "Raio",
+        "Nuvem de praga"
+      ],
+      "ancora": [
+        6,
+        15
+      ],
+      "obs": "Faísca e nuvem flutuam acima da base."
+    }
+  }
+}

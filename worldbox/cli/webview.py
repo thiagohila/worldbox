@@ -13,11 +13,13 @@ Endpoints:
     GET /world       terrain and dimensions, fetched once
     GET /state       the current snapshot: agents, settlements, stats, log
     GET /control     pause, resume or change speed
+    GET /sprites/<f> sprite sheets and their sprites.json, from static/sprites
 """
 
 from __future__ import annotations
 
 import json
+import re
 import threading
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -657,6 +659,12 @@ def _handler_factory(state: LiveState, page_loader):
                     action = query.get("action", [""])[0]
                     value = query.get("value", [None])[0]
                     self._json(state.control(action, value))
+                elif parsed.path.startswith("/sprites/"):
+                    body, content_type = load_sprite(parsed.path[len("/sprites/"):])
+                    if body is None:
+                        self.send_error(404)
+                    else:
+                        self._send(body, content_type)
                 else:
                     self.send_error(404)
             except (BrokenPipeError, ConnectionResetError):
@@ -721,6 +729,26 @@ class LiveServer:
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 PAGE_FILE = STATIC_DIR / "live.html"
+SPRITE_DIR = STATIC_DIR / "sprites"
+SPRITE_TYPES = {".png": "image/png", ".json": "application/json"}
+SPRITE_NAME = re.compile(r"[A-Za-z0-9_-]+\.(png|json)")
+
+
+def load_sprite(name: str) -> Tuple[Optional[bytes], str]:
+    """Read one sprite sheet (or its sprites.json) from disk.
+
+    Only a bare file name with a known extension is accepted, so a request can
+    never reach outside the sprites folder. Read on every request, like the
+    page, so swapping in new art needs a browser refresh rather than a restart.
+    The page falls back to its generated sprites when these are missing.
+    """
+    if not SPRITE_NAME.fullmatch(name):
+        return None, ""
+    path = SPRITE_DIR / name
+    try:
+        return path.read_bytes(), SPRITE_TYPES[path.suffix]
+    except OSError:
+        return None, ""
 
 
 def load_page() -> str:

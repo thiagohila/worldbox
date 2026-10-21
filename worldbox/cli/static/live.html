@@ -306,7 +306,8 @@ function fmtDay(d){var y=Math.floor(d/365);return "Y"+y+" · d"+(d%365)}
 /* Tribes keep being born over a long run and each brings new colours, so the
    caches are trimmed by size instead of growing for as long as the tab is open. */
 var cache={},urlCache={},cacheCount=0,urlCount=0,CACHE_MAX=4000,URL_MAX=600;
-function trimCaches(){if(cacheCount>CACHE_MAX){cache={};cacheCount=0}if(urlCount>URL_MAX){urlCache={};urlCount=0}}
+function trimCaches(){if(cacheCount>CACHE_MAX){cache={};cacheCount=0}if(urlCount>URL_MAX){urlCache={};urlCount=0}
+  if(tintCount>400){ART.tint={};tintCount=0}}
 function sprite(rows,pal,s){
   var k=rows.join("|")+"#"+JSON.stringify(pal)+"#"+s;
   if(cache[k])return cache[k];
@@ -328,6 +329,67 @@ function layerOn(base,ov){
     out[y]=row.join("");
   }
   return out;
+}
+
+/* =====================================================================
+   Hand-drawn sheets from static/sprites (layout in sprites.json). When they
+   load they replace the generated art below; if anything is missing the
+   generated sprites stay, so the map never breaks. Tribe colour and the
+   neutral skin/hair are swapped per tribe, exactly, pixel by pixel.
+   ===================================================================== */
+var ART={ok:false,meta:null,img:{},tint:{}},tintCount=0;
+function loadArt(){
+  return fetch("/sprites/sprites.json").then(function(r){if(!r.ok)throw new Error("no sprites");return r.json()})
+  .then(function(meta){
+    var names=["people","overlays","buildings","terrain","props"];
+    return Promise.all(names.map(function(n){return new Promise(function(ok,bad){
+      var im=new Image();im.onload=function(){ok([n,im])};im.onerror=bad;im.src="/sprites/"+meta.sheets[n].arquivo})}))
+    .then(function(list){list.forEach(function(p){ART.img[p[0]]=p[1]});ART.meta=meta;ART.ok=true});
+  }).catch(function(){ART.ok=false});
+}
+function toRGB(c){
+  if(c.charAt(0)==="#")return rgb(c.toLowerCase());
+  var m=/hsl\((\d+)\s+(\d+)%\s+(\d+)%\)/.exec(c);if(!m)return[136,136,136];
+  var h=+m[1]/360,s=+m[2]/100,l=+m[3]/100,q=l<.5?l*(1+s):l+s-l*s,p=2*l-q;
+  function ch(t){t=t<0?t+1:t>1?t-1:t;return t<1/6?p+(q-p)*6*t:t<1/2?q:t<2/3?p+(q-p)*(2/3-t)*6:p}
+  return[Math.round(ch(h+1/3)*255),Math.round(ch(h)*255),Math.round(ch(h-1/3)*255)];
+}
+function tinted(name,col,tIdx){
+  var k=name+"|"+col+"|"+tIdx;if(ART.tint[k])return ART.tint[k];
+  var im=ART.img[name],c=document.createElement("canvas");c.width=im.width;c.height=im.height;
+  var g=c.getContext("2d");g.drawImage(im,0,0);
+  var M=ART.meta,map={};
+  function swap(from,to){map[rgb(from.toLowerCase()).join(",")]=to}
+  swap(M.corTribo.base,toRGB(col));swap(M.corTribo.claro,toRGB(shade(col,14)));swap(M.corTribo.escuro,toRGB(shade(col,-16)));
+  if(tIdx>=0){var sk=SKINS[tIdx%SKINS.length];
+    swap(M.neutrosParaTrocar.pele,rgb(sk[0]));swap(M.neutrosParaTrocar.peleSombra,rgb(sk[1]));
+    swap(M.neutrosParaTrocar.cabelo,rgb(HAIRS[(tIdx*5+1)%HAIRS.length]))}
+  var d=g.getImageData(0,0,c.width,c.height),D=d.data;
+  for(var i=0;i<D.length;i+=4){if(!D[i+3])continue;var t=map[D[i]+","+D[i+1]+","+D[i+2]];
+    if(t){D[i]=t[0];D[i+1]=t[1];D[i+2]=t[2]}}
+  g.putImageData(d,0,0);tintCount++;return ART.tint[k]=c;
+}
+function cell(src,cx,cy,cw,ch,s){
+  var e=document.createElement("canvas");e.width=cw*s;e.height=ch*s;
+  var g=e.getContext("2d");g.imageSmoothingEnabled=false;g.drawImage(src,cx*cw,cy*ch,cw,ch,0,0,cw*s,ch*s);return e;
+}
+function artPerson(look,col,tIdx,s,fr){
+  var role=look&15,flags=look>>8,P=ART.meta.sheets.people,cw=P.celula[0],chh=P.celula[1];
+  var e=cell(tinted("people",col,tIdx),fr||0,Math.min(role,P.linhas.length-1),cw,chh,s),g=e.getContext("2d");
+  var dy=role===0?3:0;  /* sprites.json: a child's head starts 3 rows lower */
+  [[1,0],[2,1],[4,2]].forEach(function(o){
+    if(flags&o[0])g.drawImage(ART.img.overlays,o[1]*cw,0,cw,chh,0,dy*s,cw*s,chh*s)});
+  return e;
+}
+var BBOX_KEYS=["acampamento","aldeia","vila","cidade_pequena","cidade"];
+function buildingArtHeight(level){
+  var lv=Math.max(0,Math.min(4,level));
+  if(ART.ok)return ART.meta.sheets.buildings.bbox_na_celula[BBOX_KEYS[lv]].h;
+  return LEVELS[lv].h;
+}
+function propSprite(i,s){
+  var fk="prop|"+i+"|"+s;if(cache[fk])return cache[fk];cacheCount++;
+  var P=ART.meta.sheets.props;return cache[fk]=cell(ART.img.props,i,0,P.celula[0],P.celula[1],s);
 }
 
 /* ---- people (9x11) ---- */
@@ -377,11 +439,11 @@ function personRows(role,flags){
   if(flags&2)rows=layerOn(rows,["v.......v",".v.....v."]);
   return rows;
 }
-function personSprite(look,tribe,tIdx,s){
-  var fk="p|"+look+"|"+tribe+"|"+tIdx+"|"+s;
+function personSprite(look,tribe,tIdx,s,fr){
+  var fk="p|"+look+"|"+tribe+"|"+tIdx+"|"+s+"|"+(fr||0)+"|"+(ART.ok?1:0);
   if(cache[fk])return cache[fk];
   cacheCount++;
-  return cache[fk]=buildPerson(look,tribe,tIdx,s);
+  return cache[fk]=ART.ok?artPerson(look,tribe||"hsl(30 10% 55%)",tIdx,s,fr):buildPerson(look,tribe,tIdx,s);
 }
 function buildPerson(look,tribe,tIdx,s){
   var role=look&15,house=(look>>4)&15,flags=look>>8;
@@ -443,9 +505,11 @@ function buildingRows(level,fr){
   return grid;
 }
 function buildingSprite(level,col,s,fr){
-  var fk="b|"+level+"|"+col+"|"+s+"|"+(fr?1:0);
+  var fk="b|"+level+"|"+col+"|"+s+"|"+(fr?1:0)+"|"+(ART.ok?1:0);
   if(cache[fk])return cache[fk];
   cacheCount++;
+  if(ART.ok){var B=ART.meta.sheets.buildings;
+    return cache[fk]=cell(tinted("buildings",col,-1),fr?1:0,Math.max(0,Math.min(4,level)),B.celula[0],B.celula[1],s)}
   var pal={k:"#16110d",R:col,D:shade(col,-18),L:shade(col,14),y:"#d9b452",Y:"#a8862f",
     c:"#e8dec4",C:"#bcb095",w:"#9a6634",W:"#6a4422",x:"#2b1f15",o:"#ffd27a",
     q:"#a7a498",Q:"#6f6c63",f:"#ff8a2a",F:"#ffe17a",G:"#f5cd4a"};
@@ -503,12 +567,33 @@ function buildTerrain(){
     [[1,0],[-1,0],[0,1],[0,-1]].forEach(function(d){var nx=c[0]+d[0],ny=c[1]+d[1];
       if(nx<0||ny<0||nx>=W||ny>=H)return;
       if(depth[ny][nx]>depth[c[1]][c[0]]+1){depth[ny][nx]=depth[c[1]][c[0]]+1;q.push([nx,ny])}})}
+  /* With the drawn sheet, tiles come from terrain.png (rows: shallow, mid,
+     deep water, grass, forest, mountain; 3 variations, 2 frames). It has no
+     transitions, so beaches and foam are still drawn on top here. */
+  var TP=null;
+  if(ART.ok){var tc=document.createElement("canvas");tc.width=ART.img.terrain.width;tc.height=ART.img.terrain.height;
+    var tg=tc.getContext("2d");tg.drawImage(ART.img.terrain,0,0);TP=tg.getImageData(0,0,tc.width,tc.height)}
   for(var f=0;f<2;f++){
     var e=document.createElement("canvas");e.width=W*T;e.height=H*T;
     var g=e.getContext("2d"),img=g.createImageData(W*T,H*T),D=img.data;
     var put=function(px,py,c){var i=(py*W*T+px)*4;D[i]=c[0];D[i+1]=c[1];D[i+2]=c[2];D[i+3]=255};
+    var foam=function(tx,ty,bx,by){[[0,-1],[0,1],[-1,0],[1,0]].forEach(function(sd,si){if(code(tx+sd[0],ty+sd[1])<=0)return;
+      for(var i=0;i<T;i++){if((i+f+si)%3===0)continue;
+        put(bx+(sd[0]===0?i:(sd[0]<0?0:T-1)),by+(sd[1]===0?i:(sd[1]<0?0:T-1)),C.foam)}})};
+    var beach=function(tx,ty,bx,by){[[0,-1],[0,1],[-1,0],[1,0]].forEach(function(sd){if(code(tx+sd[0],ty+sd[1])!==0)return;
+      for(var i=0;i<T;i++)for(var j=0;j<2;j++){
+        var sx=sd[0]===0?i:(sd[0]<0?j:T-1-j),sy=sd[1]===0?i:(sd[1]<0?j:T-1-j);
+        put(bx+sx,by+sy,j===0?C.sand:(hash(bx+sx,by+sy,7)<.5?C.sand:C.sand2))}})};
     for(var ty=0;ty<H;ty++)for(var tx=0;tx<W;tx++){
       var k=+terrain[ty][tx],bx=tx*T,by=ty*T,u,v,n;
+      if(TP){
+        var dpt=depth[ty][tx],row=k===0?(dpt<=1?0:dpt===2?1:2):k===1?3:k===2?4:5;
+        var vc=Math.floor(hash(tx,ty,5)*3)+(f?3:0);
+        for(v=0;v<T;v++)for(u=0;u<T;u++){var si=((row*T+v)*TP.width+(vc*T+u))*4;
+          put(bx+u,by+v,[TP.data[si],TP.data[si+1],TP.data[si+2]])}
+        if(k===0)foam(tx,ty,bx,by);else if(k===1||k===2)beach(tx,ty,bx,by);
+        continue;
+      }
       if(k===0){
         var dp=depth[ty][tx],base=dp<=1?C.shal:dp===2?C.mid:C.deep,lit=lift(base,14);
         for(v=0;v<T;v++)for(u=0;u<T;u++){n=hash(bx+u,by+v,3);put(bx+u,by+v,n<.025?lit:base)}
@@ -556,7 +641,15 @@ function buildTerrain(){
         }
       }
     }
-    g.putImageData(img,0,0);terrFrames[f]=e;
+    g.putImageData(img,0,0);
+    if(TP){  /* drawn trees from props.png, back to front, rooted at the tile's bottom */
+      var PR=ART.meta.sheets.props,pw=PR.celula[0],ph=PR.celula[1],an=PR.ancora;
+      for(var ry=0;ry<H;ry++)for(var rx=0;rx<W;rx++){
+        if(terrain[ry][rx]!=="2"||hash(rx,ry,73)>.42)continue;
+        var pi=hash(rx,ry,70)<.5?1:0,jx=Math.floor(hash(rx,ry,71)*3)-1;
+        g.drawImage(ART.img.props,pi*pw,0,pw,ph,rx*T+T/2-an[0]+jx,ry*T+T-1-an[1],pw,ph)}
+    }
+    terrFrames[f]=e;
   }
 }
 
@@ -636,7 +729,7 @@ function drawEntities(st){
     var sp=buildingSprite(L[k+2],col,bs,frame);
     ctx.drawImage(sp,Math.round(sx+scale/2-sp.width/2),Math.round(sy+scale-sp.height+bs));
     var info=civByXY[L[k]+","+L[k+1]];
-    if(info&&scale>=13&&(L[k+2]>=1||scale>=22))labels.push([sx+scale/2,sy+scale-sp.height-3,info.town,col,L[k+2]]);
+    if(info&&scale>=13&&(L[k+2]>=1||scale>=22))labels.push([sx+scale/2,sy+scale+bs-buildingArtHeight(L[k+2])*bs-3,info.town,col,L[k+2]]);
   }
   var A=st.agents,stride=A.length%4===0?4:3,occ={};
   var small=scale<9,ps=Math.max(1,Math.round(scale/9));
@@ -653,7 +746,10 @@ function drawEntities(st){
       continue;
     }
     var look=stride===4?A[j+3]:1;
-    var p=personSprite(look,col2,A[j+2],ps);
+    /* Walk frames only for people who actually moved since the last snapshot
+       (same slot in the array; a rare shuffle after a death just skips a step). */
+    var moved=prevAgents&&prevAgents.length>j+1&&(prevAgents[j]!==tx||prevAgents[j+1]!==ty);
+    var p=personSprite(look,col2,A[j+2],ps,ART.ok&&moved?1+((frame+j/stride)&1):0);
     var px=Math.round(axp+scale/2-p.width/2+off[0]*scale),py=Math.round(ayp+scale-p.height+off[1]*scale);
     ctx.globalAlpha=.28;ctx.fillStyle="#000";ctx.fillRect(px+ps,py+p.height-ps,p.width-2*ps,ps);ctx.globalAlpha=1;
     ctx.drawImage(p,px,py);
@@ -757,7 +853,10 @@ function drawFx(){var now=performance.now();
       if(pp<=0)continue;
       if(f.tool==="blight")py+=pp*scale*1.2;else if(f.tool==="plague"){px+=(px-cx)*pp*.4;py+=(py-cy)*pp*.4}else py-=pp*scale*1.8;
       ctx.globalAlpha=(1-pp);ctx.fillStyle=col;
-      if(f.tool==="heal"){ctx.fillRect(px-sz,py-sz/3,sz*2,sz*.66);ctx.fillRect(px-sz/3,py-sz,sz*.66,sz*2)}
+      if(ART.ok&&(f.tool==="bless"||f.tool==="spawn"||f.tool==="plague")){
+        var spk=propSprite(f.tool==="plague"?6:4,Math.max(1,Math.round(scale/12)));
+        ctx.drawImage(spk,Math.round(px-spk.width/2),Math.round(py-spk.height/2))}
+      else if(f.tool==="heal"){ctx.fillRect(px-sz,py-sz/3,sz*2,sz*.66);ctx.fillRect(px-sz/3,py-sz,sz*.66,sz*2)}
       else if(f.tool==="plague"){ctx.beginPath();ctx.arc(px,py,sz*(1+pp*1.5),0,Math.PI*2);ctx.fill()}
       else ctx.fillRect(px-sz/2,py-sz/2,sz,sz);
     }
@@ -766,7 +865,9 @@ function drawFx(){var now=performance.now();
       ctx.globalAlpha=k;ctx.beginPath();var bx=cx,by=Math.max(0,cy-innerHeight*.6);ctx.moveTo(bx,by);
       for(var sgi=1;sgi<=8;sgi++){var tt=sgi/8;ctx.lineTo(cx+(sgi<8?(hash(sgi,fl,5)-.5)*scale*2.2:0),by+(cy-by)*tt)}
       ctx.strokeStyle="#ffe17a";ctx.lineWidth=Math.max(4,scale*.35);ctx.stroke();
-      ctx.strokeStyle="#ffffff";ctx.lineWidth=Math.max(2,scale*.14);ctx.stroke()}
+      ctx.strokeStyle="#ffffff";ctx.lineWidth=Math.max(2,scale*.14);ctx.stroke();
+      if(ART.ok){var bolt=propSprite(5,Math.max(2,Math.round(scale/6)));
+        ctx.drawImage(bolt,Math.round(cx-bolt.width/2),Math.round(cy-bolt.height+scale/2))}}
     ctx.globalAlpha=1;
   });
 }
@@ -1064,17 +1165,26 @@ function showRate(s){
   if(now-a[0]<900){return}
   el.textContent=((s.day-a[1])/((now-a[0])/1000)).toFixed(1)+" d/s";
 }
+var prevAgents=null;
 function poll(){return fetch("/state?since="+lastDay).then(function(r){return r.json()}).then(function(s){
+  prevAgents=lastState?lastState.agents:null;
   lastDay=s.day;running=s.running;lastState=s;showRate(s);
   quick(s);addLog(s.log);booted=true;frame=1-frame;render();
 }).catch(function(){})}
 
 document.querySelectorAll(".tb[data-ico]").forEach(function(b){b.querySelector("img").src=iconURL(b.dataset.ico)});
 addEventListener("resize",function(){resize();clampPan();render()});
-fetch("/world").then(function(r){return r.json()}).then(function(w){
+/* Drawn sheets load first (or fail fast to the generated art), so the very
+   first frame, legend and portraits already use the right sprites. */
+loadArt().then(function(){return fetch("/world")}).then(function(r){return r.json()}).then(function(w){
   W=w.width;H=w.height;terrain=w.terrain;
   mini.width=W*3;mini.height=H*3;
   fillHouses(w.houses||[]);buildTerrain();
+  /* The highlighted speed button is what the player sees, so make the server
+     match it; otherwise a fresh server runs at its own default (0.12 s) while
+     the page claims 1x. */
+  var onSpeed=SPEEDS.filter(function(b){return b.classList.contains("on")})[0];
+  if(onSpeed)fetch("/control?action=speed&value="+onSpeed.dataset.delay);
   resize();fit();emptyInspect();poll();setInterval(poll,500);
   setInterval(function(){if(layer!=="none")loadOverlay()},4000);
 });
