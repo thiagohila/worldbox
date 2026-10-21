@@ -145,9 +145,11 @@ and prints the difference.
 The point of Worldbox is to trap language models in a simulator and see what
 they do with a people. Narration is optional colour; the minds are the players.
 
-Each tribe that forms is handed to DeepSeek-V4.1-Flash (`deepseek-flash`). Every
-few dozen days it looks at the tribe's food, neighbours, wars and granary, and
-returns a policy. That policy is applied to the real systems:
+Each tribe that forms is handed to a language model: DeepSeek-V4.1-Flash
+(`deepseek-flash`), OpenAI, or any OpenAI-compatible endpoint you point it at —
+including free tiers and a local model. Every few dozen days it looks at the
+tribe's food, neighbours, wars and granary, and returns a policy. That policy
+is applied to the real systems:
 
 - who farms, fights, studies or heals
 - how readily members fight, flee or forage
@@ -175,6 +177,28 @@ python3 -m worldbox.main --live
 ```
 
 `export DEEPSEEK_API_KEY=...` still works, and overrides the file if both are set.
+
+### Free and offline minds
+
+Any OpenAI-compatible endpoint works from `.env` — see `.env.example` for
+ready blocks (Groq, Google Gemini, OpenRouter free models, a local Ollama):
+
+```bash
+# .env
+LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+LLM_MODEL=gemini-3.1-flash-lite
+LLM_API_KEY=your-key-here
+LLM_MAX_CALLS_PER_MINUTE=5      # keep under the free tier's limits
+```
+
+`LLM_BASE_URL=mock` plays tribes with offline rules instead: same briefing,
+same JSON, no network, no cost — handy for development.
+
+Calls are kept cheap: a mind also waits real seconds between thoughts, all
+minds share a per-minute ceiling, an unchanged situation skips the call, and a
+failed call backs off instead of retrying every day. A rejected key or unknown
+model stops the minds until reset. The **Minds** tab shows calls, skips,
+failures and tokens.
 
 Watch the **Minds** panel. Or from the prompt, `minds` and `tribe <id>`.
 `narrate` still writes the chronicle up as prose, using the same model.
