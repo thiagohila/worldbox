@@ -460,7 +460,8 @@ class AIConfig:
     max_concurrent: int = 3
 
     # Only the largest N tribes get a mind. Tiny bands stay on utility.
-    max_minds: int = 10
+    # Few enough to follow by eye; LLM_MAX_MINDS in .env or the HUD changes it.
+    max_minds: int = 3
     min_tribe_size: int = 4
 
     # Custom crafts proposed by a mind, paid for with research points.

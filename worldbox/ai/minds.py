@@ -419,6 +419,7 @@ class MindDirector:
         # player settings, so a world reset keeps them.
         self.paused: bool = False  # No new calls; current policies stay.
         self._cap_override: Optional[int] = None
+        self._minds_override: Optional[int] = None
         self.usage: Dict[str, int] = {}
         self._reset_usage()
 
@@ -479,6 +480,49 @@ class MindDirector:
         """
         self.paused = bool(paused)
 
+    def mind_slots(self) -> int:
+        """How many tribes an LLM plays: HUD setting, else LLM_MAX_MINDS, else config."""
+        from .client import env_number
+
+        if self._minds_override is not None:
+            return self._minds_override
+        override = env_number("LLM_MAX_MINDS")
+        return max(0, int(override)) if override is not None and override >= 0 else self.config.max_minds
+
+    def set_max_minds(self, count: Optional[int]) -> None:
+        """Change how many tribes an LLM plays; None goes back to .env/config.
+
+        Takes effect on the next day: tribes that fall outside the new count
+        go back to the plain rules (see ``_prune_ineligible``).
+        """
+        self._minds_override = None if count is None else max(0, int(count))
+
+    def _eligible(self, engine: Any) -> List[Any]:
+        """The tribes an LLM plays right now: the largest big-enough ones."""
+        tribes = sorted(engine.groups.active(), key=lambda group: -group.size)
+        return [
+            group for group in tribes if group.size >= self.config.min_tribe_size
+        ][: self.mind_slots()]
+
+    def _prune_ineligible(self, engine: Any) -> None:
+        """A tribe that is no longer played by an LLM stops following its
+        last LLM policy and goes back to the rules.
+
+        Without this a tribe that dropped out of the largest few kept its
+        final policy forever, never refreshed. Its timing state is kept, so
+        a tribe that climbs back in waits its normal interval before the
+        next call instead of costing one immediately.
+        """
+        keep = {group.id for group in self._eligible(engine)}
+        with self._lock:
+            for group_id in [gid for gid in self.policies if gid not in keep]:
+                del self.policies[group_id]
+
+    def managed_ids(self) -> List[int]:
+        """Tribes currently following an LLM policy."""
+        with self._lock:
+            return sorted(self.policies)
+
     def set_call_cap(self, calls_per_minute: Optional[int]) -> None:
         """Override the per-minute ceiling at runtime; None goes back to .env/config."""
         self._cap_override = None if calls_per_minute is None else max(0, int(calls_per_minute))
@@ -510,6 +554,8 @@ class MindDirector:
         row["per_minute"] = self.calls_last_minute()
         row["cap"] = self.call_cap()
         row["paused"] = self.paused
+        row["max_minds"] = self.mind_slots()
+        row["managed"] = len(self.policies)
         row["halted"] = self.halted
         return row
 
@@ -562,6 +608,7 @@ class MindDirector:
             return
         self._forget_dead(engine)
         self._drain(engine, day)
+        self._prune_ineligible(engine)
         if not self.available():
             return
         self._nudge_diplomacy(engine)
@@ -688,12 +735,7 @@ class MindDirector:
 
     def _schedule(self, engine: Any, day: int) -> None:
         """Ask idle minds that are due to think to look at the world again."""
-        tribes = sorted(engine.groups.active(), key=lambda group: -group.size)
-        eligible = [
-            group
-            for group in tribes
-            if group.size >= self.config.min_tribe_size
-        ][: self.config.max_minds]
+        eligible = self._eligible(engine)
 
         config = self.config
         now = time.monotonic()

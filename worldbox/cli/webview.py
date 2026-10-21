@@ -214,6 +214,7 @@ class LiveState:
 
             minds = []
             civs = []
+            managed = set(engine.minds.managed_ids())
             for row in engine.minds.snapshot(engine):
                 group = engine.groups.get(row.group_id)
                 settlement = engine.settlements.for_group(row.group_id) if group else None
@@ -234,6 +235,7 @@ class LiveState:
                     "y": (settlement.y if settlement else group.centre[1]) if group else 0,
                     "town": settlement.name if settlement else "",
                     "research": round(group.knowledge.research_points) if group else 0,
+                    "llm": row.group_id in managed,  # Following an LLM policy right now.
                 }
                 minds.append(entry)
                 civs.append(entry)
@@ -671,7 +673,8 @@ class LiveState:
 
         ``ai`` with ``on``/``off``/``toggle`` stops or resumes every LLM call
         (tribe minds and narrator) while the world keeps running; ``ai_cap``
-        sets calls per minute (empty value = back to .env/config);
+        sets calls per minute (empty value = back to .env/config); ``ai_minds``
+        sets how many tribes an LLM plays (same empty-value rule);
         ``ai_forget`` puts every tribe back on the plain rules.
         """
         minds = self.engine.minds
@@ -704,11 +707,17 @@ class LiveState:
         elif action == "ai_forget":
             with self.runner.lock:
                 result["forgotten"] = minds.forget_policies()
+        elif action == "ai_minds":
+            try:
+                minds.set_max_minds(None if value in (None, "") else max(0, min(20, int(float(value)))))
+            except ValueError:
+                pass
         result.update({
             "running": self.runner.running,
             "delay": self.runner.delay,
             "aiPaused": minds.paused,
             "aiCap": minds.call_cap(),
+            "aiMinds": minds.mind_slots(),
         })
         return result
 

@@ -787,6 +787,32 @@ function drawEntities(st){
     ctx.fillStyle=l[3];ctx.fillRect(x,y,3,h);
     ctx.fillStyle="#ECF1EA";ctx.fillText(l[2],l[0]+1,y+h-2);
   });
+  drawLLMMarkers(st,bs);
+}
+/* Tribes an LLM is playing right now get a blue "mind" badge over their home
+   (with their name), and at close zoom a blue pip over each member's head. */
+function drawLLMMarkers(st,bs){
+  var managed=(st.civs||[]).filter(function(c){return c.llm});if(!managed.length)return;
+  var colors={};managed.forEach(function(c){colors[c.color]=1});
+  if(scale>=14&&st.agents){var A=st.agents,stride=A.length%4===0?4:3,pip=Math.max(2,Math.round(scale/10));
+    ctx.fillStyle="#86BCFF";
+    for(var j=0;j<A.length;j+=stride){if(!colors[A[j+2]])continue;
+      var px=ox+(A[j]+.5)*scale,py=oy+A[j+1]*scale+scale*.05;
+      if(px<-10||py<-10||px>innerWidth+10||py>innerHeight+10)continue;
+      ctx.fillRect(Math.round(px-pip/2),Math.round(py-pip*2),pip,pip)}}
+  var ic=icon("mind",2);
+  ctx.font="600 10px "+tok("--mono");ctx.textAlign="left";ctx.textBaseline="middle";
+  managed.forEach(function(c){
+    var level=-1,L=st.settlementList||[];
+    for(var k=0;k<L.length;k+=4)if(L[k]===c.x&&L[k+1]===c.y){level=L[k+2];break}
+    var top=level>=0?oy+(c.y+1)*scale+bs-buildingArtHeight(level)*bs-(c.town&&scale>=13?18:0):oy+c.y*scale;
+    var name=aiPaused?c.name+" · LLM off":c.name,tw=ctx.measureText(name).width;
+    var h=ic.height+6,w=ic.width+tw+16,x=Math.round(ox+(c.x+.5)*scale-w/2),y=Math.round(top-h-4);
+    ctx.fillStyle="rgba(10,18,32,.92)";ctx.fillRect(x,y,w,h);
+    ctx.strokeStyle=aiPaused?"#4A5A70":"#86BCFF";ctx.lineWidth=1.5;ctx.strokeRect(x+.5,y+.5,w-1,h-1);
+    ctx.drawImage(ic,x+3,y+3);
+    ctx.fillStyle=aiPaused?"#8C99A8":"#CFE2FF";ctx.fillText(name,x+ic.width+8,y+h/2+1);
+  });
 }
 function drawMini(){
   if(!terrFrames[0])return;
@@ -958,10 +984,10 @@ function togglePlay(){fetch("/control?action="+(running?"pause":"resume")).then(
 $("playBtn").addEventListener("click",togglePlay);
 
 /* ---- LLM controls: switch calls off/on, rate, forget policies ---- */
-var aiPaused=false,aiCap=null;
+var aiPaused=false,aiCap=null,aiMinds=null;
 function aiControl(action,value){
   return fetch("/control?action="+action+(value!==undefined?"&value="+encodeURIComponent(value):""))
-    .then(function(r){return r.json()}).then(function(d){aiPaused=d.aiPaused;aiCap=d.aiCap;syncAi();
+    .then(function(r){return r.json()}).then(function(d){aiPaused=d.aiPaused;aiCap=d.aiCap;aiMinds=d.aiMinds;syncAi();
       if(action==="ai")toast("mind","LLM",aiPaused?"LLM calls switched OFF — tribes keep their last decisions.":"LLM calls switched ON.","mind");
       if(action==="ai_forget")toast("mind","LLM",(d.forgotten||0)+" tribe decisions forgotten — back to the plain rules.","mind");
       return poll()});
@@ -976,7 +1002,9 @@ $("minds").addEventListener("click",function(e){var t=e.target.closest("[data-ai
   if(a==="on"||a==="off")aiControl("ai",a);
   else if(a==="cap-")aiControl("ai_cap",Math.max(0,(aiCap||0)-1));
   else if(a==="cap+")aiControl("ai_cap",(aiCap||0)+1);
-  else if(a==="forget")aiControl("ai_forget");});
+  else if(a==="forget")aiControl("ai_forget");
+  else if(a==="minds-")aiControl("ai_minds",Math.max(0,(aiMinds||0)-1));
+  else if(a==="minds+")aiControl("ai_minds",(aiMinds||0)+1);});
 addEventListener("keydown",function(e){
   if(/INPUT|SELECT|TEXTAREA/.test(e.target.tagName))return;
   var k=e.key;
@@ -1091,7 +1119,7 @@ function quick(s){
   showCivs(s.civs||[]);showMinds(s.ai);showDiscoveries(s.discoveries);
   if(s.houses&&s.houses.length)fillHouses(s.houses);
   var pb=$("playBtn");pb.textContent=s.running?"❚❚":"▶";pb.classList.toggle("paused",!s.running);
-  if(s.ai){aiPaused=!!s.ai.paused;aiCap=s.ai.usage?s.ai.usage.cap:aiCap;syncAi(!!s.ai.available)}
+  if(s.ai){aiPaused=!!s.ai.paused;aiCap=s.ai.usage?s.ai.usage.cap:aiCap;aiMinds=s.ai.usage?s.ai.usage.max_minds:aiMinds;syncAi(!!s.ai.available)}
   $("miniInfo").textContent=W+"×"+H;
 }
 
@@ -1156,7 +1184,7 @@ function showCivs(rows){
   var sorted=rows.slice().sort(function(a,b){return b.pop-a.pop});
   el.innerHTML=sorted.map(function(t){var col=tribeColour(t.color)||"#888";
     return '<div class="card click" data-x="'+t.x+'" data-y="'+t.y+'"><div class="ttl"><span class="strip" style="background:'+col+'"></span>'+
-      '<div style="flex:1;min-width:0"><span class="name">'+esc(t.name)+'</span>'+badge(t.house)+
+      '<div style="flex:1;min-width:0"><span class="name">'+esc(t.name)+'</span>'+(t.llm?'<span class="badge" style="color:var(--mind);border-color:#2F4A6E">LLM</span>':'')+badge(t.house)+
       '<div class="meta">'+t.pop+' people'+(t.era?' · '+esc(t.era):'')+(t.town?' · '+esc(t.town):' · nomadic')+'</div>'+
       bar(t.pop/max*100,col)+(t.inventing?'<div class="meta" style="color:var(--invention)">crafting '+esc(t.inventing)+'</div>':'')+'</div></div></div>'}).join("");
   bindJump(el);
@@ -1183,8 +1211,9 @@ function showMinds(ai){
     ' · failed '+(u.failures||0)+'<br>tokens '+tokTotal.toLocaleString()+' (in '+(u.tokens_in||0).toLocaleString()+
     ', out '+(u.tokens_out||0).toLocaleString()+(u.tokens_cached?', cached '+u.tokens_cached.toLocaleString():'')+')'+
     '<div class="aictl"><button data-ai="'+(u.paused?'on':'off')+'">'+(u.paused?'Turn AI on':'Turn AI off')+'</button>'+
-    '<span>cap</span><button data-ai="cap-">−</button><b style="color:var(--ink)">'+(u.cap!=null?u.cap:'?')+'</b><button data-ai="cap+">+</button><span>/min</span>'+
-    '<button data-ai="forget" title="Drop every policy: tribes play by the plain rules until they think again">Forget decisions</button></div></div>';
+    '<span>cap</span><button data-ai="cap-">−</button><b style="color:var(--ink)">'+(u.cap!=null?u.cap:'?')+'</b><button data-ai="cap+">+</button><span>/min</span></div>'+
+    '<div class="aictl"><span>LLM plays</span><button data-ai="minds-">−</button><b style="color:var(--ink)">'+(u.max_minds!=null?u.max_minds:'?')+'</b><button data-ai="minds+">+</button><span>tribes (largest) · now '+(u.managed||0)+'</span></div>'+
+    '<div class="aictl"><button data-ai="forget" title="Drop every policy: tribes play by the plain rules until they think again">Forget decisions</button></div></div>';
   el.innerHTML=usageLine+'<div class="sub" style="margin-bottom:8px">'+(ai.thinking?ai.thinking+" thinking · ":"")+ai.minds+' minds live</div>'+
     rows.map(function(t){var col=tribeColour(t.color)||"#888";
     var st=t.thinking?'<span class="meta" style="font-style:italic">thinking…</span>':t.stance?'<span class="stance">'+esc(t.stance)+'</span>':t.error?'':'<span class="meta">waiting</span>';
