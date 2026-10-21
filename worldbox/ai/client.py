@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # DeepSeek-V4.1-Flash. The `deepseek-flash` id always points at the current
 # Flash model; older aliases (deepseek-v4-flash, …) are routed here too.
@@ -105,19 +105,71 @@ def api_key(explicit: Optional[str] = None, env_name: str = ENV_KEY) -> Optional
     return os.environ.get(env_name) or None
 
 
+# Any OpenAI-compatible endpoint can be one more house, configured from .env:
+#   LLM_BASE_URL  e.g. https://api.groq.com/openai/v1, or http://127.0.0.1:11434/v1
+#   LLM_MODEL     the provider's model name
+#   LLM_API_KEY   optional -- a local server like Ollama needs none
+#   LLM_LABEL     optional display name
+# LLM_BASE_URL=mock selects the offline rule-based mind (ai/mock.py) instead.
+CUSTOM_ENV_KEY = "LLM_API_KEY"
+MOCK_TOKENS = frozenset({"mock", "offline"})
+
+
+def _custom_spec() -> Optional[Dict[str, str]]:
+    """The .env-configured house, if any."""
+    load_dotenv()
+    base = (os.environ.get("LLM_BASE_URL") or "").strip()
+    if base.lower() in MOCK_TOKENS:
+        return {"house": "mock", "model": "mock-mind", "label": "Mock mind (offline)",
+                "env": "", "url": "", "keyless": "1"}
+    model = (os.environ.get("LLM_MODEL") or "").strip()
+    if not base or not model:
+        return None
+    url = base.rstrip("/")
+    if not url.endswith("/chat/completions"):
+        url += "/chat/completions"
+    return {
+        "house": "custom",
+        "model": model,
+        "label": (os.environ.get("LLM_LABEL") or "").strip() or model,
+        "env": CUSTOM_ENV_KEY,
+        "url": url,
+        "keyless": "" if os.environ.get(CUSTOM_ENV_KEY) else "1",
+    }
+
+
+def all_houses() -> Tuple[Dict[str, str], ...]:
+    """The built-in houses plus the .env-configured one."""
+    custom = _custom_spec()
+    return HOUSES + ((custom,) if custom else ())
+
+
+def env_number(name: str) -> Optional[float]:
+    """A numeric setting from .env or the environment, or None."""
+    load_dotenv()
+    raw = (os.environ.get(name) or "").strip()
+    try:
+        return float(raw) if raw else None
+    except ValueError:
+        return None
+
+
 def house_spec(house_or_model: str) -> Dict[str, str]:
     """Look up a house by its id or model name, defaulting to DeepSeek."""
     token = (house_or_model or "").strip().lower()
-    for spec in HOUSES:
-        if token in {spec["house"], spec["model"], spec["label"].lower()}:
+    for spec in all_houses():
+        if token in {spec["house"], spec["model"].lower(), spec["label"].lower()}:
             return spec
     return dict(HOUSES[0])
 
 
 def available_houses() -> List[Dict[str, str]]:
-    """Houses whose keys are actually configured."""
+    """Houses that can actually be called: a key is set, or none is needed."""
     load_dotenv()
-    return [spec for spec in HOUSES if os.environ.get(spec["env"])]
+    return [
+        spec for spec in all_houses()
+        if spec.get("keyless") or (spec["env"] and os.environ.get(spec["env"]))
+    ]
 
 
 def house_for_index(index: int) -> str:
@@ -135,11 +187,53 @@ class ChatResult:
     text: str = ""
     error: str = ""
     model: str = DEFAULT_MODEL
+    status: int = 0  # HTTP status of the final attempt, 0 if none was made.
+    tokens_in: int = 0
+    tokens_out: int = 0
+    tokens_cached: int = 0  # Prompt tokens the provider served from its cache.
 
     @property
     def ok(self) -> bool:
         """True if the model returned usable text."""
         return bool(self.text) and not self.error
+
+    @property
+    def fatal(self) -> bool:
+        """True when retrying cannot help: bad key, no access, or no such model."""
+        return self.status in (401, 403, 404)
+
+
+# Parameters some models refuse. When a 400 names one of these, the request is
+# rewritten once (renamed or dropped) instead of failing for good -- providers
+# change which knobs a model accepts more often than this file changes.
+_RENAMES = {"max_tokens": "max_completion_tokens"}
+_DROPPABLE = ("temperature", "reasoning_effort", "thinking", "response_format")
+
+
+def _adapt_payload(payload: Dict[str, Any], detail: str) -> bool:
+    """Rewrite a request a 400 complained about. True if anything changed."""
+    lowered = detail.lower()
+    for old, new in _RENAMES.items():
+        if old in payload and old in lowered:
+            payload[new] = payload.pop(old)
+            return True
+    for name in _DROPPABLE:
+        if name in payload and name in lowered:
+            del payload[name]
+            return True
+    return False
+
+
+def _usage(body: Dict[str, Any]) -> Tuple[int, int, int]:
+    """Prompt, completion and cached-prompt token counts, if reported."""
+    usage = body.get("usage") or {}
+    details = usage.get("prompt_tokens_details") or {}
+    cached = details.get("cached_tokens") or usage.get("prompt_cache_hit_tokens") or 0
+    return (
+        int(usage.get("prompt_tokens") or 0),
+        int(usage.get("completion_tokens") or 0),
+        int(cached),
+    )
 
 
 def ssl_context() -> ssl.SSLContext:
@@ -171,6 +265,12 @@ def is_available(explicit: Optional[str] = None) -> bool:
     return bool(available_houses())
 
 
+def _openai_reasoning(model: str) -> bool:
+    """GPT-5 and o-series models reason first and reject sampling knobs."""
+    token = model.lower()
+    return token.startswith("gpt-5") or (len(token) > 1 and token[0] == "o" and token[1].isdigit())
+
+
 def chat(
     messages: List[Dict[str, str]],
     key: Optional[str] = None,
@@ -182,64 +282,94 @@ def chat(
     max_tokens: int = 1200,
     json_mode: bool = False,
     thinking: bool = False,
+    reasoning_effort: Optional[str] = None,
 ) -> ChatResult:
-    """Send a chat-completions request to DeepSeek Flash.
+    """Send a chat-completions request to DeepSeek or OpenAI.
 
     Thinking mode is off by default: tribe decisions have to come back in
     seconds or the live map stalls, and Flash without thinking is the whole
     point of using this model. JSON mode is for structured policies.
+
+    Each house gets the parameters it understands: OpenAI reasoning models
+    (GPT-5, o-series) take ``max_completion_tokens`` and no ``temperature``,
+    and ``reasoning_effort`` keeps their hidden thinking -- which is billed --
+    short. If a provider still rejects a parameter with a 400, the request is
+    rewritten once and resent rather than failing every call for good.
     """
     spec = house_spec(model)
-    resolved = key or api_key(env_name=spec["env"])
-    if resolved is None and spec["house"] != "deepseek":
-        # Fall back to whatever key exists so a missing second house does not
-        # silence a tribe that was assigned to it.
+    resolved = key or (api_key(env_name=spec["env"]) if spec["env"] else None)
+    if resolved is None and spec.get("keyless"):
+        resolved = ""  # A local server, or the mock: no Authorization header.
+    if resolved is None:
+        # Fall back to whatever house is usable so a missing one does not
+        # silence a tribe -- or the narrator -- that was assigned to it.
         roster = available_houses()
         if roster:
             spec = roster[0]
-            resolved = api_key(env_name=spec["env"])
+            resolved = (api_key(env_name=spec["env"]) if spec["env"] else None) or ""
             model = spec["model"]
+    if spec["house"] == "mock":
+        from .mock import reply
+
+        return ChatResult(text=reply(messages), model=spec["model"], status=200)
     if resolved is None:
         return ChatResult(
-            error=f"No API key. Put {ENV_KEY} or {OPENAI_ENV_KEY} in .env.",
+            error=f"No API key. Put {ENV_KEY} or {OPENAI_ENV_KEY} in .env, or set LLM_BASE_URL.",
             model=model,
         )
 
     payload: Dict[str, Any] = {
         "model": spec["model"],
         "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
         "stream": False,
     }
-    if spec["house"] == "deepseek":
-        payload["thinking"] = {"type": "enabled" if thinking else "disabled"}
+    if spec["house"] == "openai":
+        payload["max_completion_tokens"] = max_tokens
+        if _openai_reasoning(spec["model"]):
+            if reasoning_effort:
+                payload["reasoning_effort"] = reasoning_effort
+        else:
+            payload["temperature"] = temperature
+    else:
+        payload["max_tokens"] = max_tokens
+        payload["temperature"] = temperature
+        if spec["house"] == "deepseek":
+            payload["thinking"] = {"type": "enabled" if thinking else "disabled"}
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
 
     last_error = ""
+    last_status = 0
     body = None
-    for attempt in range(retries + 1):
+    adapted = False
+    attempt = 0
+    while attempt <= retries:
+        headers = {"Content-Type": "application/json"}
+        if resolved:
+            headers["Authorization"] = f"Bearer {resolved}"
         request = urllib.request.Request(
             spec["url"],
             data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {resolved}",
-            },
+            headers=headers,
             method="POST",
         )
         try:
             with urllib.request.urlopen(
                 request, timeout=timeout, context=ssl_context()
             ) as response:
+                last_status = response.status
                 body = json.loads(response.read().decode("utf-8"))
             break
         except urllib.error.HTTPError as error:
+            last_status = error.code
             detail = error.read().decode("utf-8", errors="ignore")[:300]
+            if error.code == 400 and not adapted and _adapt_payload(payload, detail):
+                adapted = True  # One free resend with the rewritten request.
+                continue
             if error.code in RETRYABLE_STATUS and attempt < retries:
                 last_error = f"API returned {error.code}"
                 time.sleep(backoff * (2**attempt))
+                attempt += 1
                 continue
             if error.code in (401, 403):
                 return ChatResult(
@@ -248,16 +378,20 @@ def chat(
                         f"is valid. {detail}"
                     ),
                     model=model,
+                    status=error.code,
                 )
             if error.code == 404:
                 return ChatResult(
                     error=(
-                        f"Model '{model}' is not available ({error.code}). "
-                        "Try model='deepseek-flash'."
+                        f"Model '{spec['model']}' is not available ({error.code}). "
+                        "Check the model name in worldbox/ai/client.py:HOUSES."
                     ),
                     model=model,
+                    status=error.code,
                 )
-            return ChatResult(error=f"API returned {error.code}: {detail}", model=model)
+            return ChatResult(
+                error=f"API returned {error.code}: {detail}", model=model, status=error.code
+            )
         except urllib.error.URLError as error:
             reason = error.reason
             if isinstance(reason, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(reason):
@@ -273,25 +407,29 @@ def chat(
             if attempt < retries:
                 last_error = f"Could not reach the API: {reason}"
                 time.sleep(backoff * (2**attempt))
+                attempt += 1
                 continue
             return ChatResult(error=f"Could not reach the API: {reason}", model=model)
         except (TimeoutError, OSError) as error:
             if attempt < retries:
                 last_error = f"Network error: {error}"
                 time.sleep(backoff * (2**attempt))
+                attempt += 1
                 continue
             return ChatResult(error=f"Network error: {error}", model=model)
         except json.JSONDecodeError:
             return ChatResult(error="The API returned a response that was not JSON.", model=model)
 
     if body is None:
-        return ChatResult(error=last_error or "The request failed.", model=model)
+        return ChatResult(error=last_error or "The request failed.", model=model, status=last_status)
 
+    tokens_in, tokens_out, tokens_cached = _usage(body)
     try:
         message = body["choices"][0]["message"]
         text = (message.get("content") or "").strip()
     except (KeyError, IndexError, TypeError):
-        return ChatResult(error="The API response contained no text.", model=model)
+        return ChatResult(error="The API response contained no text.", model=model,
+                          status=last_status, tokens_in=tokens_in, tokens_out=tokens_out)
 
     if not text:
         reason = ""
@@ -302,7 +440,11 @@ def chat(
         if reason == "length":
             return ChatResult(
                 error="The model hit its output limit before writing anything.",
-                model=model,
+                model=model, status=last_status, tokens_in=tokens_in, tokens_out=tokens_out,
             )
-        return ChatResult(error="The model returned an empty reply.", model=model)
-    return ChatResult(text=text, model=model)
+        return ChatResult(error="The model returned an empty reply.", model=model,
+                          status=last_status, tokens_in=tokens_in, tokens_out=tokens_out)
+    return ChatResult(
+        text=text, model=model, status=last_status,
+        tokens_in=tokens_in, tokens_out=tokens_out, tokens_cached=tokens_cached,
+    )

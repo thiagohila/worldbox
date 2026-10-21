@@ -24,6 +24,8 @@ import json
 import queue
 import re
 import threading
+import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -244,12 +246,11 @@ def _brief_tribe(engine: Any, group: Any) -> str:
     settlement = engine.settlements.for_group(group.id)
     known = sorted(group.knowledge.known)
 
-    spec = house_spec(getattr(group, "ai_house", "") or DEFAULT_MODEL)
+    # The house's flavour line already rides in the system prompt (_think);
+    # repeating it here only cost input tokens on every call.
     lines = [
         f"Year {engine.clock.year}, day {engine.clock.day}.",
         f"You are the mind of the {group.name} (tribe_id {group.id}).",
-        HOUSE_FLAVOR.get(spec["house"], ""),
-        f"Your model is {spec['label']}.",
         f"People: {group.size}. Hunger: {group.average_hunger:.0f}/100. "
         f"Aggression: {group.average_aggression:.2f}. Era: {group.era}.",
     ]
@@ -279,7 +280,7 @@ def _brief_tribe(engine: Any, group: Any) -> str:
         f"{group.war_dead} war dead, {group.plague_dead} plague dead."
     )
 
-    neighbours = engine.diplomacy.relation_summary(group.id, engine.groups)[:8]
+    neighbours = engine.diplomacy.relation_summary(group.id, engine.groups)[:6]
     if neighbours:
         lines.append("Neighbours:")
         for other, score in neighbours:
@@ -325,11 +326,51 @@ def _brief_tribe(engine: Any, group: Any) -> str:
     return "\n".join(lines)
 
 
-def _think(briefing: str, timeout: float, model: str = DEFAULT_MODEL) -> ChatResult:
+def _signature(engine: Any, group: Any) -> Tuple[Any, ...]:
+    """A coarse fingerprint of what a mind would decide from.
+
+    When it matches the one from the tribe's last thought, a new call would
+    most likely return the same policy, so the call can be skipped. Buckets
+    are deliberately wide: small drifts do not count as news.
+    """
+    settlement = engine.settlements.for_group(group.id)
+    wars = tuple(sorted(
+        other
+        for key, war in engine.diplomacy.wars.items()
+        if war.active and group.id in key
+        for other in key
+        if other != group.id
+    ))
+    neighbours = tuple(
+        (other.id, int(score // 20))
+        for other, score in engine.diplomacy.relation_summary(group.id, engine.groups)[:6]
+    )
+    return (
+        group.size // 5,
+        int(group.average_hunger // 15),
+        group.era,
+        int(settlement.level) if settlement is not None else -1,
+        int(settlement.store_fraction() * 4) if settlement is not None else -1,
+        len(group.knowledge.known),
+        wars,
+        neighbours,
+    )
+
+
+def _think(
+    briefing: str,
+    timeout: float,
+    model: str = DEFAULT_MODEL,
+    config: Optional[AIConfig] = None,
+) -> ChatResult:
     """One blocking API call. Runs on a worker thread."""
+    config = config or AIConfig()
     spec = house_spec(model)
     flavor = HOUSE_FLAVOR.get(spec["house"], "")
+    # The system prompt is identical on every call and comes first, so
+    # providers that cache prompt prefixes can reuse it.
     system = SYSTEM_PROMPT if not flavor else SYSTEM_PROMPT + " " + flavor
+    reasoning = spec["house"] == "openai" and spec["model"].startswith("gpt-5")
     return chat(
         messages=[
             {"role": "system", "content": system},
@@ -339,9 +380,10 @@ def _think(briefing: str, timeout: float, model: str = DEFAULT_MODEL) -> ChatRes
         retries=1,
         backoff=1.0,
         temperature=0.6,
-        max_tokens=700,
+        max_tokens=config.max_tokens_reasoning if reasoning else config.max_tokens,
         json_mode=True,
         thinking=False,
+        reasoning_effort=config.openai_reasoning_effort or None,
         model=spec["model"],
     )
 
@@ -362,6 +404,25 @@ class MindDirector:
         self._lock = threading.Lock()
         self._pool: Optional[ThreadPoolExecutor] = None
         self._last_error: str = ""
+        # Cost control: real time of each tribe's last thought, failure
+        # streaks and when a failed tribe may try again, the situation each
+        # policy was decided from, and the timestamps of recent calls.
+        self._last_wall: Dict[int, float] = {}
+        self._failures: Dict[int, int] = {}
+        self._retry_day: Dict[int, int] = {}
+        self._retry_wall: Dict[int, float] = {}
+        self._signatures: Dict[int, Tuple[Any, ...]] = {}
+        self._skips: Dict[int, int] = {}
+        self._recent_calls: "deque[float]" = deque()
+        self.halted: str = ""  # Set on a rejected key or unknown model.
+        self.usage: Dict[str, int] = {}
+        self._reset_usage()
+
+    def _reset_usage(self) -> None:
+        self.usage = {
+            "calls": 0, "skipped": 0, "failures": 0,
+            "tokens_in": 0, "tokens_out": 0, "tokens_cached": 0,
+        }
 
     def reset(self) -> None:
         """Drop every mind. Called when the world is rebuilt."""
@@ -370,6 +431,12 @@ class MindDirector:
             self.last_thought.clear()
             self.errors.clear()
             self._pending.clear()
+            for store in (self._last_wall, self._failures, self._retry_day,
+                          self._retry_wall, self._signatures, self._skips):
+                store.clear()
+            self._recent_calls.clear()
+            self.halted = ""
+            self._reset_usage()
         while True:
             try:
                 self._inbox.get_nowait()
@@ -382,7 +449,33 @@ class MindDirector:
 
     def available(self) -> bool:
         """True when minds should actually call the model."""
-        return bool(self.config.enabled) and is_available()
+        return bool(self.config.enabled) and not self.halted and is_available()
+
+    def call_cap(self) -> int:
+        """Calls per minute allowed: LLM_MAX_CALLS_PER_MINUTE in .env, else config.
+
+        Free tiers publish their own per-minute and per-day limits; this is
+        the knob that keeps a run inside them.
+        """
+        from .client import env_number
+
+        override = env_number("LLM_MAX_CALLS_PER_MINUTE")
+        return int(override) if override is not None and override >= 0 else self.config.max_calls_per_minute
+
+    def calls_last_minute(self) -> int:
+        """API calls started in the last 60 real seconds."""
+        cutoff = time.monotonic() - 60.0
+        while self._recent_calls and self._recent_calls[0] < cutoff:
+            self._recent_calls.popleft()
+        return len(self._recent_calls)
+
+    def usage_snapshot(self) -> Dict[str, Any]:
+        """Counters for the HUD: calls, skips, failures, tokens, halt reason."""
+        row: Dict[str, Any] = dict(self.usage)
+        row["per_minute"] = self.calls_last_minute()
+        row["cap"] = self.call_cap()
+        row["halted"] = self.halted
+        return row
 
     def thinking_count(self) -> int:
         """How many minds currently have an API call in flight."""
@@ -451,7 +544,9 @@ class MindDirector:
         """Drop policies for tribes that no longer exist."""
         living = {group.id for group in engine.groups.active()}
         with self._lock:
-            for store in (self.policies, self.last_thought, self.errors, self._pending):
+            for store in (self.policies, self.last_thought, self.errors, self._pending,
+                          self._last_wall, self._failures, self._retry_day,
+                          self._retry_wall, self._signatures, self._skips):
                 for group_id in [gid for gid in store if gid not in living]:
                     del store[group_id]
 
@@ -464,6 +559,10 @@ class MindDirector:
                 break
             with self._lock:
                 self._pending.pop(group_id, None)
+            if isinstance(result, ChatResult):
+                self.usage["tokens_in"] += result.tokens_in
+                self.usage["tokens_out"] += result.tokens_out
+                self.usage["tokens_cached"] += result.tokens_cached
             group = engine.groups.get(group_id)
             if group is None:
                 continue
@@ -471,17 +570,29 @@ class MindDirector:
                 error = result.error if isinstance(result, ChatResult) else str(result)
                 self.errors[group_id] = error
                 self._last_error = error
+                if isinstance(result, ChatResult) and result.fatal:
+                    # Every other call would fail the same way and still be a
+                    # request: stop all minds until the world is reset.
+                    self.halted = error
+                self._back_off(group_id, day)
                 continue
             try:
+                raw = extract_json(result.text)
+                if not raw:
+                    raise ValueError("empty policy")
                 policy = parse_policy(
-                    extract_json(result.text),
+                    raw,
                     thought_day,
                     result.model,
                     era=group.era,
                 )
             except (ValueError, json.JSONDecodeError) as error:
                 self.errors[group_id] = f"Could not parse policy: {error}"
+                self._back_off(group_id, day)
                 continue
+            self._failures.pop(group_id, None)
+            self._retry_day.pop(group_id, None)
+            self._retry_wall.pop(group_id, None)
             if policy.invent is not None:
                 survey = scan_materials(engine, group)
                 problem = validate_proposal(
@@ -546,15 +657,37 @@ class MindDirector:
             if group.size >= self.config.min_tribe_size
         ][: self.config.max_minds]
 
+        config = self.config
+        now = time.monotonic()
+        budget = max(0, self.call_cap() - self.calls_last_minute())
         due: List[Any] = []
         with self._lock:
             for group in eligible:
+                if not budget:
+                    break  # The rest wait for the next tick; nothing is lost.
                 if group.id in self._pending:
                     continue
+                if day < self._retry_day.get(group.id, -1) or now < self._retry_wall.get(group.id, 0.0):
+                    continue  # Backing off after a failure.
                 last = self.last_thought.get(group.id)
-                if last is None or day - last >= self.config.think_interval_days:
-                    due.append(group)
-                    self._pending[group.id] = True
+                if last is not None:
+                    if day - last < config.think_interval_days:
+                        continue
+                    if now - self._last_wall.get(group.id, 0.0) < config.min_think_seconds:
+                        continue
+                if config.skip_unchanged and group.id in self.policies:
+                    signature = _signature(engine, group)
+                    skips = self._skips.get(group.id, 0)
+                    if signature == self._signatures.get(group.id) and skips < config.max_unchanged_skips:
+                        # Same situation as last time: keep the policy, spend nothing.
+                        self._skips[group.id] = skips + 1
+                        self.last_thought[group.id] = day
+                        self._last_wall[group.id] = now
+                        self.usage["skipped"] += 1
+                        continue
+                due.append(group)
+                self._pending[group.id] = True
+                budget -= 1
 
         if not due:
             return
@@ -563,6 +696,11 @@ class MindDirector:
         for group in due:
             briefing = _brief_tribe(engine, group)
             group_id = group.id
+            self._signatures[group_id] = _signature(engine, group)
+            self._skips[group_id] = 0
+            self._last_wall[group_id] = now
+            self._recent_calls.append(now)
+            self.usage["calls"] += 1
 
             def _done(future, gid=group_id, thought_day=day, text=briefing) -> None:
                 try:
@@ -576,6 +714,19 @@ class MindDirector:
 
                 group.ai_house = house_for_index(group.id)
             future = pool.submit(
-                _think, briefing, timeout, group.ai_house or DEFAULT_MODEL
+                _think, briefing, timeout, group.ai_house or DEFAULT_MODEL, self.config
             )
             future.add_done_callback(_done)
+
+    def _back_off(self, group_id: int, day: int) -> None:
+        """Make a failed tribe wait before asking again, longer each time.
+
+        Without this, a failed call left the tribe "due" on the very next sim
+        day, so a bad key or a rate limit turned into a call per tribe per day.
+        """
+        failures = self._failures.get(group_id, 0) + 1
+        self._failures[group_id] = failures
+        self.usage["failures"] += 1
+        factor = min(self.config.failure_backoff_cap, 2 ** (failures - 1))
+        self._retry_day[group_id] = day + self.config.think_interval_days * factor
+        self._retry_wall[group_id] = time.monotonic() + self.config.failure_backoff_seconds * factor

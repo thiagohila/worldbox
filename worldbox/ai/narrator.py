@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
 from ..simulation.chronicle import ChronicleEntry
-from .client import DEFAULT_MODEL, ENV_KEY, ChatResult, api_key, chat, is_available
+from .client import DEFAULT_MODEL, ENV_KEY, OPENAI_ENV_KEY, ChatResult, api_key, chat, is_available
 
 # Re-exported so existing imports of narrator.ENV_KEY / is_available keep working.
 __all__ = [
@@ -81,9 +81,10 @@ def narrate(
 
     Returns a :class:`Narration`; check ``.ok`` before using ``.text``.
     """
-    if api_key(key) is None:
+    # Any configured house will do; chat() falls back to whichever key exists.
+    if not is_available(key):
         return Narration(
-            error=f"No API key. Put {ENV_KEY} in .env or export it.",
+            error=f"No API key. Put {ENV_KEY} or {OPENAI_ENV_KEY} in .env or export it.",
             model=model,
         )
     if not entries:

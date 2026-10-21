@@ -210,6 +210,7 @@ class LiveState:
                     "openaiKey": OPENAI_ENV_KEY,
                     "minds": stats.ai_minds,
                     "thinking": stats.ai_thinking,
+                    "usage": engine.minds.usage_snapshot(),
                     "tribes": minds,
                     "houses": houses,
                 },
@@ -314,7 +315,7 @@ class LiveState:
 
         if not narrator.is_available():
             return {"ok": False, "error":
-                    f"No API key. Put {narrator.ENV_KEY} in .env or export it."}
+                    "No API key. Put DEEPSEEK_API_KEY or OPENAI_API_KEY in .env or export it."}
         with self.runner.lock:
             entries = list(self.engine.chronicle.entries)
             year = self.engine.clock.year
@@ -392,11 +393,25 @@ class LiveState:
                                      f"The land around ({x}, {y}) withered")
 
             elif tool == "smite":
+                # Kill outright. Zeroing health is not enough: the next day's
+                # upkeep regenerates it before deaths are checked, so nobody
+                # died -- and marking a wound would have counted the dead as
+                # war casualties. Same bookkeeping as the engine's deaths.
                 for agent in engine.agents:
-                    if max(abs(agent.x - x), abs(agent.y - y)) <= radius:
-                        agent.needs.health = 0.0
-                        agent.wounded_on_day = day
+                    if agent.alive and max(abs(agent.x - x), abs(agent.y - y)) <= radius:
+                        tribe = engine.groups.get(agent.group_id)
+                        agent.die("fire from the sky", day)
+                        engine.total_deaths += 1
                         affected += 1
+                        allegiance = f" of the {tribe.name}" if tribe else ""
+                        engine.events.record(
+                            day,
+                            EventKind.DEATH,
+                            f"Agent #{agent.id} ({agent.name}){allegiance} was struck "
+                            f"down by fire from the sky",
+                            agent_id=agent.id,
+                        )
+                engine.agents = [agent for agent in engine.agents if agent.alive]
                 engine.events.record(day, EventKind.SYSTEM,
                                      f"Fire fell on ({x}, {y}); {affected} died")
 

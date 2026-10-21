@@ -467,6 +467,31 @@ class AIConfig:
     allow_inventions: bool = True
     max_custom_techs: int = 8
 
+    # --- cost control -------------------------------------------------------
+    # think_interval_days is in sim days, so at high speed a tribe would call
+    # the API every couple of real seconds. A mind also waits this many real
+    # seconds between thoughts, whatever the speed.
+    min_think_seconds: float = 20.0
+    # Hard ceiling on API calls for all minds together, per real minute.
+    max_calls_per_minute: int = 15
+    # Skip a call when the tribe's situation has not meaningfully changed
+    # since its last thought (the policy simply carries on), but never more
+    # than this many times in a row.
+    skip_unchanged: bool = True
+    max_unchanged_skips: int = 2
+    # After a failed call a tribe waits think_interval_days * 2**(failures-1),
+    # capped at this multiple, and at least failure_backoff_seconds * 2**n of
+    # real time. A rejected key or unknown model stops all minds until reset.
+    failure_backoff_cap: int = 8
+    failure_backoff_seconds: float = 15.0
+    # Output budget per thought. A policy is ~150-250 tokens of JSON; reasoning
+    # models (GPT-5) also spend hidden reasoning tokens from this budget.
+    max_tokens: int = 450
+    max_tokens_reasoning: int = 900
+    # Sent to OpenAI reasoning models; "minimal" keeps billed thinking short.
+    # Dropped automatically if the model rejects it.
+    openai_reasoning_effort: str = "minimal"
+
 
 # ---------------------------------------------------------------------------
 # Simulation loop

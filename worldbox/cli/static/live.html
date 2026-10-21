@@ -290,7 +290,8 @@ function tok(n){return getComputedStyle(document.documentElement).getPropertyVal
 function esc(t){return String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;")}
 function tribeColour(i){return i<0?null:"hsl("+((i*47)%360)+" 62% 58%)"}
 function houseClass(h){return h==="openai"?"oa":h==="deepseek"?"ds":""}
-function houseLabel(h){return h==="openai"?"GPT-5 Mini":h==="deepseek"?"DeepSeek":h||""}
+function houseLabel(h){if(h==="openai")return "GPT-5 Mini";if(h==="deepseek")return "DeepSeek";
+  var row=(houses||[]).filter(function(x){return x.house===h})[0];return row?row.label:(h||"")}
 function houseColor(h){return h===2||h==="openai"?"#E8B84A":h===1||h==="deepseek"?"#4EC8C0":"#6b4a2a"}
 function shade(c,d){
   var m=/hsl\((\d+)\s+(\d+)%\s+(\d+)%\)/.exec(c);
@@ -1120,12 +1121,19 @@ function showMinds(ai){
   if(!ai.available){
     el.innerHTML='<div class="empty"><img class="px" alt="" src="'+iconURL("mind",4)+'" style="width:36px;height:36px"><div class="big">Minds are asleep.</div>'+
       'Tribes are running on instinct (utility rules). Put <span class="mono">'+esc(ai.key||"DEEPSEEK_API_KEY")+'</span> and/or <span class="mono">'+
-      esc(ai.openaiKey||"OPENAI_API_KEY")+'</span> in <span class="mono">.env</span> to hand the largest tribes to an LLM.</div>';return}
+      esc(ai.openaiKey||"OPENAI_API_KEY")+'</span> in <span class="mono">.env</span> to hand the largest tribes to an LLM &mdash; or, for free, '+
+      '<span class="mono">LLM_BASE_URL</span> + <span class="mono">LLM_MODEL</span> (Groq, Gemini, OpenRouter, a local Ollama) or <span class="mono">LLM_BASE_URL=mock</span> for offline rules.</div>';return}
   var rows=ai.tribes||[];
   var sig=rows.map(function(t){return t.id+t.stance+t.intent}).join("|");
   if(sig!==lastMindSig&&lastMindSig&&activePane!=="minds")$("dotMinds").classList.add("show");lastMindSig=sig;
   if(!rows.length){el.innerHTML='<div class="empty">Waiting for tribes to form, or plant one yourself.</div>';return}
-  el.innerHTML='<div class="sub" style="margin-bottom:8px">'+(ai.thinking?ai.thinking+" thinking · ":"")+ai.minds+' minds live</div>'+
+  var u=ai.usage||{},tokTotal=(u.tokens_in||0)+(u.tokens_out||0);
+  var usageLine='<div class="card" style="font-family:var(--mono);font-size:10.5px;color:var(--ink2)">'+
+    (u.halted?'<div style="color:var(--bad);margin-bottom:4px">Minds stopped: '+esc(u.halted)+'</div>':'')+
+    'API calls <b style="color:var(--ink)">'+(u.calls||0)+'</b> · '+(u.per_minute||0)+'/'+(u.cap!=null?u.cap:'?')+' per min · skipped '+(u.skipped||0)+
+    ' · failed '+(u.failures||0)+'<br>tokens '+tokTotal.toLocaleString()+' (in '+(u.tokens_in||0).toLocaleString()+
+    ', out '+(u.tokens_out||0).toLocaleString()+(u.tokens_cached?', cached '+u.tokens_cached.toLocaleString():'')+')</div>';
+  el.innerHTML=usageLine+'<div class="sub" style="margin-bottom:8px">'+(ai.thinking?ai.thinking+" thinking · ":"")+ai.minds+' minds live</div>'+
     rows.map(function(t){var col=tribeColour(t.color)||"#888";
     var st=t.thinking?'<span class="meta" style="font-style:italic">thinking…</span>':t.stance?'<span class="stance">'+esc(t.stance)+'</span>':t.error?'':'<span class="meta">waiting</span>';
     return '<div class="card click" data-x="'+t.x+'" data-y="'+t.y+'"><div class="ttl"><span class="strip" style="background:'+col+'"></span><div style="flex:1">'+

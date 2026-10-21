@@ -714,7 +714,7 @@ class Terminal:
         """Ask an AI to write the world's chronicle up as a history."""
         if not ai_narrator.is_available():
             print(
-                f"Narration needs an API key. Put {ai_narrator.ENV_KEY} in .env\n"
+                f"Narration needs an API key. Put DEEPSEEK_API_KEY or OPENAI_API_KEY in .env\n"
                 "or export it, then run 'narrate' again."
             )
             return
