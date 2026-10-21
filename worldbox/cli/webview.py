@@ -94,7 +94,25 @@ class LiveState:
         # so another site open in the browser cannot drive them.
         self.extensions: Dict[str, Any] = {}
         self.token = secrets.token_urlsafe(18)
+        # People marked on the map with a name plate (see feature).
+        self.featured: Dict[int, Dict[str, str]] = {}
         engine.events.subscribe(self._on_event)
+
+    # -- featured characters -------------------------------------------------
+
+    def feature(self, agent_id: int, label: str, kind: str = "hero") -> None:
+        """Mark one person on the map with a name plate, so they are easy to find.
+
+        ``kind`` picks the plate's look in the page (``"king"`` adds a crown).
+        The page lists them in ``/state`` as ``featured`` and centres on one
+        when its parent frame asks (see the ``message`` listener in
+        live.html). A person who dies simply drops off the list.
+        """
+        self.featured[int(agent_id)] = {"label": str(label)[:40], "kind": str(kind)[:16]}
+
+    def unfeature(self, agent_id: int) -> None:
+        """Remove a person's name plate."""
+        self.featured.pop(int(agent_id), None)
 
     # -- extensions -----------------------------------------------------------
 
@@ -191,7 +209,14 @@ class LiveState:
                 if group.chieftain_id is not None
             }
             agents: List[int] = []
+            featured: List[Dict[str, Any]] = []
             for agent in engine.agents:
+                mark = self.featured.get(agent.id) if self.featured else None
+                if mark is not None:
+                    featured.append({
+                        "id": agent.id, "label": mark["label"], "kind": mark["kind"],
+                        "x": agent.x, "y": agent.y, "color": self._index_for(agent.group_id),
+                    })
                 agents.extend(
                     (
                         agent.x,
@@ -263,6 +288,7 @@ class LiveState:
                 "food": round(stats.total_food / capacity, 3),
                 "agents": agents,
                 "settlementList": settlements,
+                "featured": featured,
                 "log": fresh,
                 "discoveries": list(engine.discoveries[-16:]),
                 "civs": civs,
@@ -524,9 +550,8 @@ class LiveState:
         people: int = 10,
     ) -> Dict[str, Any]:
         """Plant a named civilisation at a tile, played by a chosen LLM house."""
-        from ..agents.agent import create_agent
-        from ..agents.needs import Needs
         from ..ai.client import available_houses, house_for_index, house_spec
+        from ..society.founding import found_tribe
 
         cleaned = "".join(
             ch for ch in name.strip()[:40] if ch.isalnum() or ch in " -'"
@@ -563,58 +588,26 @@ class LiveState:
                 x, y = nearby[0]
 
             day = engine.clock.day
-            rng = engine.rng
-            dpy = engine.config.simulation.days_per_year
-            group = engine.groups.create(day, rng)
-            if cleaned:
+            # The generated name comes from the registry; the requested one
+            # keeps its kind ("... Folk") unless it already names one.
+            def named(group):
+                if not cleaned:
+                    return group.name
                 kind = group.name.split()[-1] if " " in group.name else "Folk"
-                group.name = cleaned if cleaned.lower().endswith(
+                return cleaned if cleaned.lower().endswith(
                     ("tribe", "clan", "folk", "kin", "host")
                 ) else f"{cleaned} {kind}"
-            group.ai_house = chosen
-            group.centre = (x, y)
 
-            spots = [
-                (tx, ty)
-                for tx, ty in world.tiles_within(x, y, 2)
-                if world.is_passable(tx, ty)
-            ] or [(x, y)]
-            family = cleaned.split()[0] if cleaned else group.name.split()[0]
-            spawned = []
-            for index in range(count):
-                tx, ty = spots[index % len(spots)]
-                agent = create_agent(
-                    agent_id=engine._next_agent_id,
-                    x=tx,
-                    y=ty,
-                    age_days=int(rng.uniform(16, 32) * dpy),
-                    rng=rng,
-                    config=engine.config.agents,
-                    days_per_year=dpy,
-                    day=day,
-                    group_id=group.id,
-                    inherited_family=family,
-                    needs=Needs(hunger=12.0, energy=95.0, health=100.0),
-                )
-                if mixed and roster:
-                    agent.ai_house = roster[index % len(roster)]["house"]
-                else:
-                    agent.ai_house = chosen or house_for_index(agent.id)
-                engine._next_agent_id += 1
-                engine.agents.append(agent)
-                spawned.append(agent)
-            group.member_ids = [agent.id for agent in spawned]
-            group.chieftain_id = spawned[0].id
-            spawned[0].role = "warrior"
-
-            ceiling = engine.config.settlements.max_fertility + 1.0
-            for tx, ty in world.tiles_within(x, y, 3):
-                world.resources.cultivate(tx, ty, 0.5, ceiling)
-                cap = world.resources.effective_capacity(tx, ty)
-                if cap > 0:
-                    world.resources.food[ty][tx] = cap
-
-            settlement = engine.settlements.found_at(group, x, y, day, rng, food_store=50.0)
+            group, settlement, spawned = found_tribe(
+                engine,
+                x,
+                y,
+                count,
+                family=cleaned.split()[0] if cleaned else "",
+                house=chosen,
+                houses=[row["house"] for row in roster] if mixed and roster else None,
+                rename=named,
+            )
             label = house_spec(chosen)["label"] if chosen else "utility rules"
             town = settlement.name if settlement else "open ground"
             engine.events.record(
