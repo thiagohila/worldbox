@@ -487,7 +487,8 @@ class SimulationConfig:
     # of successful meals is recorded.
     food_event_chance: float = 0.04
 
-    # Seconds between ticks while the simulation is running unattended.
+    # Target seconds per tick while the simulation is running unattended. The
+    # runner subtracts the time the day itself took before sleeping.
     autorun_tick_seconds: float = 0.12
 
     # Selectable tick delays for the live view, slowest to fastest. The last

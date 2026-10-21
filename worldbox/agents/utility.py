@@ -149,7 +149,8 @@ def score_actions(
             continue
         if raw <= 0.0:
             continue
-        scores[goal] = WEIGHTS.get(goal.value, 1.0) * raw
+        # _value_ is the plain attribute behind .value, without the descriptor.
+        scores[goal] = WEIGHTS.get(goal._value_, 1.0) * raw
 
     if not scores:  # Every scorer declined; wandering is always possible.
         from .behavior import Goal as _Goal
@@ -159,19 +160,34 @@ def score_actions(
     # A tribe mind can lean the whole people toward fighting, fleeing, farming
     # or breeding without rewriting the scorers themselves.
     if social is not None:
-        from .behavior import Goal as _Goal
-
-        biases = {
-            _Goal.FIGHT: social.fight_bias,
-            _Goal.FLEE: social.flee_bias,
-            _Goal.SEEK_FOOD: social.food_bias,
-            _Goal.EAT: social.food_bias,
-            _Goal.SEEK_MATE: social.mate_bias,
-        }
-        for goal, bias in biases.items():
-            if goal in scores and bias != 1.0:
+        for goal, attribute in _bias_attributes():
+            bias = getattr(social, attribute)
+            if bias != 1.0 and goal in scores:
                 scores[goal] *= bias
     return scores
+
+
+_BIAS_ATTRIBUTES = None
+
+
+def _bias_attributes():
+    """Which :class:`SocialContext` multiplier leans on which goal.
+
+    Built once on first use (``behavior`` imports this module, so it cannot be
+    built at import time) instead of a fresh dict for every agent every day.
+    """
+    global _BIAS_ATTRIBUTES
+    if _BIAS_ATTRIBUTES is None:
+        from .behavior import Goal as _Goal
+
+        _BIAS_ATTRIBUTES = (
+            (_Goal.FIGHT, "fight_bias"),
+            (_Goal.FLEE, "flee_bias"),
+            (_Goal.SEEK_FOOD, "food_bias"),
+            (_Goal.EAT, "food_bias"),
+            (_Goal.SEEK_MATE, "mate_bias"),
+        )
+    return _BIAS_ATTRIBUTES
 
 
 def choose(
@@ -187,5 +203,8 @@ def choose(
     is deterministic for a given world state.
     """
     scores = score_actions(agent, world, config, day, social)
-    goal, score = max(scores.items(), key=lambda item: (item[1], -list(scores).index(item[0])))
+    # Highest score wins; on a tie the earlier entry wins, as before, without
+    # rebuilding the key list for every comparison.
+    best = max(enumerate(scores.items()), key=lambda pair: (pair[1][1], -pair[0]))
+    goal, score = best[1]
     return Decision(goal=goal, score=score, scores=scores)

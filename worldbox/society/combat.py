@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from ..agents.agent import Agent
 from ..config import AgentConfig, CombatConfig, RoleConfig
@@ -138,12 +138,27 @@ def find_enemy(
     world,
     diplomacy: Diplomacy,
     radius: int = 1,
+    enemies: Optional[Dict[int, Set[int]]] = None,
 ) -> Optional[Agent]:
     """The nearest agent from a hostile tribe, or ``None``.
 
     Used both to pick fights and to decide when to run away.
+
+    ``enemies`` is :meth:`Diplomacy.enemies_map`, built once while relations
+    hold still. With it, an agent whose tribe has no enemies today returns at
+    once, and the rest skip the per-pair hostility check. The answer is the
+    same either way -- the scan order is unchanged.
     """
     if agent.group_id is None:
+        return None
+    if enemies is not None:
+        foes = enemies.get(agent.group_id)
+        if not foes:
+            return None
+        for x, y in world.tiles_within(agent.x, agent.y, radius):
+            for other in occupancy.get((x, y), ()):
+                if other.group_id in foes and other.alive and other.id != agent.id:
+                    return other
         return None
     for x, y in world.tiles_within(agent.x, agent.y, radius):
         for other in occupancy.get((x, y), ()):
@@ -175,10 +190,13 @@ def engagements(
     if not config.enabled:
         return chosen
 
+    # Relations only change after the fights are picked, so one map serves
+    # the whole loop.
+    enemies = diplomacy.enemies_map()
     for agent in agents:
         if not agent.alive or agent.id in fighting or agent.group_id is None:
             continue
-        enemy = find_enemy(agent, occupancy, world, diplomacy)
+        enemy = find_enemy(agent, occupancy, world, diplomacy, enemies=enemies)
         if enemy is None or enemy.id in fighting:
             continue
 

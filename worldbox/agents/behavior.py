@@ -58,6 +58,11 @@ class Goal(Enum):
     FIGHT = "fight"
     FLEE = "flee"
 
+    # Goals key the score table of every agent every day. Enum's own hash is
+    # a Python-level call; members are singletons, so identity hashing gives
+    # the same dict behaviour at C speed.
+    __hash__ = object.__hash__
+
     @property
     def label(self) -> str:
         """Human-readable goal name, e.g. ``"seek food"``."""

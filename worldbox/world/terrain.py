@@ -53,6 +53,11 @@ class TerrainType(Enum):
     FOREST = "forest"
     MOUNTAIN = "mountain"
 
+    # Every passability check looks a member up in TERRAIN_PROPERTIES. Members
+    # are singletons, so identity hashing behaves the same as Enum's
+    # Python-level hash, only faster.
+    __hash__ = object.__hash__
+
     @property
     def properties(self) -> TerrainProperties:
         return TERRAIN_PROPERTIES[self]

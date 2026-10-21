@@ -186,6 +186,8 @@ class SimulationEngine:
         # the engine never has to guess what the log kept or evicted.
         self._day_events: List[Event] = []
         self.events.subscribe(self._day_events.append)
+        # Today's enemies map, rebuilt at the start of each day's agent loop.
+        self._enemies: Optional[Dict[int, set]] = None
 
         self.reset(self.seed)
 
@@ -303,6 +305,9 @@ class SimulationEngine:
 
         occupancy = self._build_occupancy()
         eaters: List[Agent] = []
+        # Nothing in the agent loop touches relations, so one enemies map
+        # answers every threat lookup today.
+        self._enemies = self.diplomacy.enemies_map()
 
         for agent in self.agents:
             if not agent.alive:
@@ -415,7 +420,8 @@ class SimulationEngine:
         threat = None
         if self.config.combat.enabled and group is not None:
             threat = combat_system.find_enemy(
-                agent, occupancy, self.world, self.diplomacy
+                agent, occupancy, self.world, self.diplomacy,
+                enemies=self._enemies,
             )
         if group is None:
             return SocialContext(threat=threat)
@@ -1220,7 +1226,7 @@ class SimulationRunner:
         return self._thread is not None and self._thread.is_alive()
 
     def set_delay(self, seconds: float) -> None:
-        """Change the pause between ticks; takes effect on the next tick.
+        """Change the target time per tick; takes effect on the next tick.
 
         At the fastest setting the runner switches to simulating a batch of days
         per lock acquisition instead of spinning one day at a time, so a display
@@ -1254,6 +1260,7 @@ class SimulationRunner:
         minimum_sleep = self.engine.config.simulation.min_tick_sleep
         stopped = False
         while not self._stop.is_set() and not stopped:
+            started = time.monotonic()
             with self.lock:
                 for _ in range(max(1, self.batch)):
                     try:
@@ -1269,6 +1276,10 @@ class SimulationRunner:
                     if not self.engine.agents:
                         stopped = True
                         break
+            # ``delay`` is the target time per tick, not a pause added after it:
+            # a busy world that takes 60 ms a day still runs at the chosen
+            # speed until the day itself costs more than the delay.
             # The lock is released before sleeping, and the sleep is never zero,
             # so a display thread is always able to acquire it between batches.
-            time.sleep(max(self.delay, minimum_sleep))
+            elapsed = time.monotonic() - started
+            time.sleep(max(self.delay - elapsed, minimum_sleep))

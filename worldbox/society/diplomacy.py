@@ -19,7 +19,7 @@ exhausted.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from ..config import DiplomacyConfig
 from .groups import Group, GroupRegistry
@@ -95,6 +95,30 @@ class Diplomacy:
         if a is None or b is None or a == b:
             return False
         return self.at_war(a, b) or self.relation(a, b) <= self.config.hostility_threshold
+
+    def enemies_map(self) -> Optional[Dict[int, Set[int]]]:
+        """Every tribe's current enemies, as ``are_hostile`` would judge them.
+
+        Built once and reused while relations cannot change -- the combat
+        lookups call ``are_hostile`` hundreds of thousands of times a day, and
+        in peacetime almost every one of them is a "no". Returns None when
+        tribes that never met would already count as hostile, because then the
+        map would have to list every pair and the plain check is cheaper.
+        """
+        if self.config.starting_relation <= self.config.hostility_threshold:
+            return None
+        enemies: Dict[int, Set[int]] = {}
+        hostile = [key for key, war in self.wars.items() if war.active]
+        hostile.extend(
+            key for key, value in self.relations.items()
+            if value <= self.config.hostility_threshold
+        )
+        for a, b in hostile:
+            if a == b:
+                continue
+            enemies.setdefault(a, set()).add(b)
+            enemies.setdefault(b, set()).add(a)
+        return enemies
 
     def forget_group(self, group_id: int) -> None:
         """Drop all relations involving a tribe that no longer exists."""
