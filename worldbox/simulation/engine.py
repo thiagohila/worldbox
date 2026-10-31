@@ -785,9 +785,15 @@ class SimulationEngine:
                     counts, len(members), self.config.roles
                 )
 
-            chieftain = culture_system.choose_chieftain(
-                members, self.config.simulation.days_per_year
-            )
+            chieftain = None
+            if self.config.culture.stable_chieftain:
+                chieftain = next(
+                    (a for a in members if a.id == group.chieftain_id and a.alive), None
+                )
+            if chieftain is None:
+                chieftain = culture_system.choose_chieftain(
+                    members, self.config.simulation.days_per_year
+                )
             if chieftain is not None:
                 if group.chieftain_id != chieftain.id:
                     group.chieftain_id = chieftain.id

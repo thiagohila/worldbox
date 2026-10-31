@@ -25,6 +25,7 @@ import json
 import re
 import secrets
 import threading
+import traceback
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
@@ -918,9 +919,10 @@ def _handler_factory(state: LiveState, page_loader):
                     self.send_error(404)
             except (BrokenPipeError, ConnectionResetError):
                 pass  # Browser navigated away mid-response.
-            except Exception as error:  # Never let one bad request kill the server.
+            except Exception:  # Never let one bad request kill the server.
+                traceback.print_exc()  # The details go to the terminal, not the browser.
                 try:
-                    self.send_error(500, str(error))
+                    self.send_error(500, "Internal server error")
                 except OSError:
                     pass
 

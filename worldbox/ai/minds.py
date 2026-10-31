@@ -15,7 +15,8 @@ actually means here: they do not get a chat log, they get a people.
 
 Network calls run on a background thread pool. The day loop never waits, so a
 slow reply costs sim-days rather than freezing the live map. No key, or a
-failed call, leaves the tribe on the ordinary utility rules.
+failed call, leaves the tribe on the ordinary utility rules. A 429 (quota
+spent) closes ``self.quota`` for every mind, for longer each time in a row.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..config import AIConfig, Config
 from ..simulation.events import EventKind
 from .client import DEFAULT_MODEL, ChatResult, chat, house_spec, is_available
+from .quota import QuotaGate
 from .inventions import (
     InventionProposal,
     briefing_lines,
@@ -415,6 +417,8 @@ class MindDirector:
         self._skips: Dict[int, int] = {}
         self._recent_calls: "deque[float]" = deque()
         self.halted: str = ""  # Set on a rejected key or unknown model.
+        # Closed after a 429; the provider's quota outlives a world reset.
+        self.quota = QuotaGate()
         # Runtime switches, set while the game runs (HUD, terminal). They are
         # player settings, so a world reset keeps them.
         self.paused: bool = False  # No new calls; current policies stay.
@@ -557,6 +561,7 @@ class MindDirector:
         row["max_minds"] = self.mind_slots()
         row["managed"] = len(self.policies)
         row["halted"] = self.halted
+        row["quota_wait"] = self.quota.retry_in()
         return row
 
     def thinking_count(self) -> int:
@@ -645,6 +650,7 @@ class MindDirector:
             with self._lock:
                 self._pending.pop(group_id, None)
             if isinstance(result, ChatResult):
+                self.quota.record(result)
                 self.usage["tokens_in"] += result.tokens_in
                 self.usage["tokens_out"] += result.tokens_out
                 self.usage["tokens_cached"] += result.tokens_cached
@@ -739,6 +745,8 @@ class MindDirector:
 
         config = self.config
         now = time.monotonic()
+        if not self.quota.open():
+            return  # The provider said 429; nobody asks until the gate reopens.
         budget = max(0, self.call_cap() - self.calls_last_minute())
         due: List[Any] = []
         with self._lock:

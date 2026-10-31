@@ -363,6 +363,11 @@ class CultureConfig:
     # A chieftain's temperament pulls the tribe's own aggression toward theirs.
     chieftain_influence: float = 0.15
 
+    # Off: the most prestigious member leads, re-chosen every day (a leader can
+    # lose the post to someone who just aged past them). On: a chieftain keeps
+    # the post while alive and in the tribe; a new one is chosen only then.
+    stable_chieftain: bool = False
+
 
 @dataclass(frozen=True)
 class DiplomacyConfig:

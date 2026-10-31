@@ -1379,6 +1379,7 @@ function showMinds(ai){
   var usageLine='<div class="card" style="font-family:var(--mono);font-size:10.5px;color:var(--ink2)">'+
     (u.paused?'<div style="color:var(--warn);margin-bottom:4px">LLM calls are OFF — tribes keep their last decisions. Press <span class="kbd">M</span> or the AI button to resume.</div>':'')+
     (u.halted?'<div style="color:var(--bad);margin-bottom:4px">Minds stopped: '+esc(u.halted)+'</div>':'')+
+    (u.quota_wait>0?'<div style="color:var(--bad);margin-bottom:4px">Quota spent (429): next try in ~'+Math.ceil(u.quota_wait/60)+' min</div>':'')+
     'API calls <b style="color:var(--ink)">'+(u.calls||0)+'</b> · '+(u.per_minute||0)+'/'+(u.cap!=null?u.cap:'?')+' per min · skipped '+(u.skipped||0)+
     ' · failed '+(u.failures||0)+'<br>tokens '+tokTotal.toLocaleString()+' (in '+(u.tokens_in||0).toLocaleString()+
     ', out '+(u.tokens_out||0).toLocaleString()+(u.tokens_cached?', cached '+u.tokens_cached.toLocaleString():'')+')'+
