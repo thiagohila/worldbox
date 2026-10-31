@@ -748,13 +748,13 @@ function drawToolPreview(){
 function drawEntities(st){
   var grey="hsl(30 8% 55%)";
   var bs=Math.max(1,Math.round(scale/8));
-  drawTies(st);drawRuins(st,bs);
+  drawTies(st);drawRuins(st,bs);drawRealHouses(st,bs);
   var L=st.settlementList,labels=[];
   for(var k=0;k<L.length;k+=4){
     var sx=ox+L[k]*scale,sy=oy+L[k+1]*scale;
     if(sx<-80||sy<-80||sx>innerWidth+80||sy>innerHeight+80)continue;
     var col=tribeColour(L[k+3])||grey;
-    drawHouses(L[k],L[k+1],civByXY[L[k]+","+L[k+1]],col,bs);
+    if(!(st.houseList&&st.houseList.length))drawHouses(L[k],L[k+1],civByXY[L[k]+","+L[k+1]],col,bs);
     var sp=buildingSprite(L[k+2],col,bs,frame);
     ctx.drawImage(sp,Math.round(sx+scale/2-sp.width/2),Math.round(sy+scale-sp.height+bs));
     var info=civByXY[L[k]+","+L[k+1]];
@@ -829,6 +829,15 @@ function drawHouses(sx,sy,info,col,bs){
   var hut=sprite(HUT,{R:col,r:shade(col,-22),w:"#D7C49A",D:"#5A3D22"},bs);
   spots.forEach(function(p){var X=ox+p[0]*scale,Y=oy+p[1]*scale;
     ctx.drawImage(hut,Math.round(X+scale/2-hut.width/2+(hash(p[0],p[1],152)-.5)*scale*.3),Math.round(Y+scale-hut.height-1))});
+}
+/* Real houses, when the game builds them (config.settlements.houses): each
+   member lives in one, so people spread over the tribe's land. */
+function drawRealHouses(st,bs){
+  var H=st.houseList;if(!H||!H.length||scale<5)return;
+  for(var k=0;k<H.length;k+=3){var X=ox+H[k]*scale,Y=oy+H[k+1]*scale;
+    if(X<-30||Y<-30||X>innerWidth+30||Y>innerHeight+30)continue;
+    var col=tribeColour(H[k+2])||"#999",hut=sprite(HUT,{R:col,r:shade(col,-22),w:"#D7C49A",D:"#5A3D22"},bs);
+    ctx.drawImage(hut,Math.round(X+scale/2-hut.width/2),Math.round(Y+scale-hut.height-1))}
 }
 /* Inventions: the latest ones float over the inventor's home for ~90 days. */
 function drawInventions(st){

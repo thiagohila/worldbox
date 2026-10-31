@@ -79,6 +79,8 @@ class Settlement:
     last_upgraded_day: int = 0
     peak_level: SettlementLevel = SettlementLevel.CAMP
     peak_population: int = 0
+    houses: List[Tuple[int, int]] = field(default_factory=list)  # Only with config.houses.
+    homes: Dict[int, Tuple[int, int]] = field(default_factory=dict)  # Member id -> their house.
 
     @property
     def spec(self) -> LevelSpec:
@@ -223,6 +225,71 @@ class SettlementSystem:
         if settlement is not None:
             self.abandoned.append(settlement)
         return settlement
+
+    # -- houses -------------------------------------------------------------
+
+    def update_houses(
+        self, settlement: Settlement, members: Sequence[int], world, taken: set
+    ) -> None:
+        """Build or abandon houses so there is one per ``people_per_house`` members.
+
+        New houses go inside the settlement's domain (6 + 2 per level tiles,
+        as the map's territory layer, capped at ``house_radius``), on walkable
+        tiles at least ``house_spacing`` from any other house or settlement,
+        nearest first with a fixed jitter so they do not form neat rings.
+        Nothing is drawn from the simulation's random generator. ``taken``
+        holds tiles used by any settlement or house, and is updated.
+
+        Each member keeps the same house for good: only people whose house
+        was abandoned, and newcomers, are given one (the least crowded). A
+        house is abandoned only when there is more than one too many, so a
+        population hovering around a multiple does not build and abandon the
+        same house day after day.
+        """
+        config = self.config
+        wanted = min(config.max_houses, -(-len(members) // max(1, config.people_per_house)))
+        while len(settlement.houses) > wanted + 1:
+            taken.discard(settlement.houses.pop())
+        if len(settlement.houses) < wanted:
+            self._build_houses(settlement, wanted, world, taken)
+        self._assign_homes(settlement, members)
+
+    def _assign_homes(self, settlement: Settlement, members: Sequence[int]) -> None:
+        """Keep each member's house; house the rest where fewest live."""
+        standing = set(settlement.houses)
+        present = set(members)
+        homes = {mid: house for mid, house in settlement.homes.items() if mid in present and house in standing}
+        if standing:
+            count = {house: 0 for house in settlement.houses}
+            for house in homes.values():
+                count[house] += 1
+            for mid in members:
+                if mid not in homes:
+                    house = min(settlement.houses, key=lambda h: count[h])
+                    homes[mid] = house
+                    count[house] += 1
+        settlement.homes = homes
+
+    def _build_houses(self, settlement: Settlement, wanted: int, world, taken: set) -> None:
+        config = self.config
+        sx, sy = settlement.x, settlement.y
+        reach = min(config.house_radius, 6 + 2 * int(settlement.level))
+        gap = max(1, config.house_spacing)
+        free = []
+        for x, y in world.tiles_within(sx, sy, reach):
+            if (x, y) in taken or not world.is_passable(x, y):
+                continue
+            jitter = ((x * 73856093) ^ (y * 19349663) ^ (settlement.id * 83492791)) % 1000 / 1000.0
+            free.append((max(abs(x - sx), abs(y - sy)) + jitter * 2.5, x, y))
+        free.sort()
+        for _, x, y in free:
+            if len(settlement.houses) >= wanted:
+                break
+            if any(max(abs(x - tx), abs(y - ty)) < gap for tx, ty in taken
+                   if abs(x - tx) < gap and abs(y - ty) < gap):
+                continue  # Too close to a house or a settlement.
+            settlement.houses.append((x, y))
+            taken.add((x, y))
 
     # -- the granary --------------------------------------------------------
 

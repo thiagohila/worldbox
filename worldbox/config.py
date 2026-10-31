@@ -301,6 +301,18 @@ class SettlementConfig:
     # How far from home a member can still claim a ration.
     ration_radius: int = 8
 
+    # Houses (off by default, so the stock simulation is unchanged). When on,
+    # a settlement builds one house per ``people_per_house`` members inside its
+    # domain (the territory the map draws: 6 + 2 per level tiles out, at most
+    # ``house_radius``), ``house_spacing`` tiles apart; each member calls one
+    # of them home -- so people spread over their territory instead of all
+    # crowding the settlement -- and can draw rations at their own house.
+    houses: bool = False
+    people_per_house: int = 5
+    max_houses: int = 120
+    house_radius: int = 14
+    house_spacing: int = 2
+
 
 @dataclass(frozen=True)
 class RoleConfig:

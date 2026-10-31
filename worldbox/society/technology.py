@@ -103,11 +103,121 @@ TECH_TREE: Tuple[Technology, ...] = (
         "engineering", "Engineering", "Iron Age", 21600, ("mathematics", "iron_working"),
         food_yield=0.30, health=0.20, research=0.20,
     ),
+    # Eras after Iron (added 2026-10-30, up to the present day). Same pattern
+    # as above: costs keep climbing, each era opens from the last one's core,
+    # and bonuses stay in the ranges the early tree uses. Combat and disease
+    # resistance are capped elsewhere (combat / disease config).
+    # --- Classical Age ----------------------------------------------------
+    Technology(
+        "philosophy", "Philosophy", "Classical Age", 26400, ("engineering", "writing"),
+        research=0.35,
+    ),
+    Technology(
+        "aqueducts", "Aqueducts", "Classical Age", 28800, ("engineering",),
+        health=0.25, disease_resistance=0.20,
+    ),
+    Technology(
+        "currency", "Currency", "Classical Age", 31200, ("mathematics", "sailing"),
+        food_yield=0.20, research=0.10,
+    ),
+    Technology(
+        "roads", "Roads", "Classical Age", 34800, ("engineering", "the_wheel"),
+        food_yield=0.15, combat=0.15,
+    ),
+    # --- Medieval Age -----------------------------------------------------
+    Technology(
+        "crop_rotation", "Crop Rotation", "Medieval Age", 40800, ("currency", "aqueducts"),
+        food_yield=0.40, fertility=0.10,
+    ),
+    Technology(
+        "castles", "Castles", "Medieval Age", 44400, ("roads", "iron_working"),
+        combat=0.40,
+    ),
+    Technology(
+        "universities", "Universities", "Medieval Age", 50400, ("philosophy",),
+        research=0.45,
+    ),
+    Technology(
+        "windmills", "Windmills", "Medieval Age", 55200, ("crop_rotation", "engineering"),
+        food_yield=0.25, research=0.05,
+    ),
+    # --- Renaissance ------------------------------------------------------
+    Technology(
+        "printing_press", "Printing Press", "Renaissance", 62400, ("universities",),
+        research=0.50,
+    ),
+    Technology(
+        "navigation", "Navigation", "Renaissance", 69600, ("printing_press", "currency"),
+        food_yield=0.25, research=0.15,
+    ),
+    Technology(
+        "gunpowder", "Gunpowder", "Renaissance", 74400, ("castles", "universities"),
+        combat=0.50,
+    ),
+    Technology(
+        "anatomy", "Anatomy", "Renaissance", 79200, ("printing_press", "aqueducts"),
+        health=0.30, disease_resistance=0.20,
+    ),
+    # --- Industrial Age ---------------------------------------------------
+    Technology(
+        "steam_power", "Steam Power", "Industrial Age", 91200, ("navigation", "windmills"),
+        food_yield=0.30, research=0.20,
+    ),
+    Technology(
+        "railways", "Railways", "Industrial Age", 103200, ("steam_power", "roads"),
+        food_yield=0.25, combat=0.15,
+    ),
+    Technology(
+        "vaccination", "Vaccination", "Industrial Age", 112800, ("anatomy", "printing_press"),
+        health=0.30, disease_resistance=0.40,
+    ),
+    Technology(
+        "industrial_farming", "Industrial Farming", "Industrial Age", 124800, ("steam_power", "crop_rotation"),
+        food_yield=0.50, fertility=0.15,
+    ),
+    # --- Modern Age -------------------------------------------------------
+    Technology(
+        "electricity", "Electricity", "Modern Age", 148800, ("steam_power", "universities"),
+        research=0.50, health=0.10,
+    ),
+    Technology(
+        "antibiotics", "Antibiotics", "Modern Age", 168000, ("vaccination", "electricity"),
+        health=0.40, disease_resistance=0.40,
+    ),
+    Technology(
+        "flight", "Flight", "Modern Age", 187200, ("electricity", "railways"),
+        food_yield=0.15, combat=0.30, research=0.10,
+    ),
+    Technology(
+        "rocketry", "Rocketry", "Modern Age", 211200, ("flight", "gunpowder"),
+        combat=0.30, research=0.20,
+    ),
+    # --- Information Age (the present) ------------------------------------
+    Technology(
+        "computers", "Computers", "Information Age", 252000, ("electricity", "rocketry"),
+        research=0.60,
+    ),
+    Technology(
+        "moon_landing", "Moon Landing", "Information Age", 300000, ("rocketry", "computers"),
+        research=0.40, health=0.05,
+    ),
+    Technology(
+        "internet", "The Internet", "Information Age", 336000, ("computers",),
+        research=0.50, food_yield=0.10,
+    ),
+    Technology(
+        "genetics", "Genetics", "Information Age", 384000, ("computers", "antibiotics"),
+        food_yield=0.35, health=0.30, disease_resistance=0.30,
+    ),
 )
 
 TECH_BY_ID: Dict[str, Technology] = {tech.id: tech for tech in TECH_TREE}
 STOCK_IDS: Set[str] = {tech.id for tech in TECH_TREE}
-ERAS: Tuple[str, ...] = ("Stone Age", "Agricultural Age", "Bronze Age", "Iron Age")
+ERAS: Tuple[str, ...] = (
+    "Stone Age", "Agricultural Age", "Bronze Age", "Iron Age",
+    "Classical Age", "Medieval Age", "Renaissance", "Industrial Age", "Modern Age",
+    "Information Age",
+)
 
 
 def register_technology(tech: Technology) -> Technology:

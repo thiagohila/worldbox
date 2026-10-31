@@ -430,6 +430,8 @@ class SimulationEngine:
         # drifting centroid -- which is what makes territory stable.
         settlement = self.settlements.for_group(group.id)
         home = settlement.position if settlement is not None else group.centre
+        if settlement is not None and settlement.homes:
+            home = settlement.homes.get(agent.id, home)
 
         fertility = group.knowledge.effects.fertility
         if settlement is not None:
@@ -796,6 +798,11 @@ class SimulationEngine:
 
     def _process_settlements(self, day: int) -> None:
         """Found, grow, provision and abandon settlements."""
+        taken = None
+        if self.config.settlements.houses:
+            taken = {s.position for s in self.settlements.active()}
+            for s in self.settlements.active():
+                taken.update(s.houses)
         for group in self.groups.active():
             settlement = self.settlements.for_group(group.id)
 
@@ -825,6 +832,8 @@ class SimulationEngine:
             self.settlements.cultivate(settlement, farmers, self.world, group.knowledge)
             self.settlements.spoil(settlement, group.knowledge)
             settlement.peak_population = max(settlement.peak_population, group.size)
+            if taken is not None:
+                self.settlements.update_houses(settlement, group.member_ids, self.world, taken)
 
             upgraded = self.settlements.try_upgrade(settlement, group, group.knowledge, day)
             if upgraded is not None:
@@ -1052,8 +1061,12 @@ class SimulationEngine:
         settlement = self.settlements.for_group(agent.group_id)
         if settlement is None:
             return 0.0
-        if agent.distance_to(*settlement.position) > self.config.settlements.ration_radius:
-            return 0.0
+        reach = self.config.settlements.ration_radius
+        if agent.distance_to(*settlement.position) > reach:
+            # With houses on, a member's own house is a pantry too.
+            house = settlement.homes.get(agent.id)
+            if house is None or agent.distance_to(*house) > reach:
+                return 0.0
         return self.settlements.draw_ration(settlement, self.config.settlements.ration_size)
 
     def _record_discovery(self, agent: Agent, terrain_name: str, day: int) -> None:

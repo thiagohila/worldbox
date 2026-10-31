@@ -246,7 +246,13 @@ class LiveState:
                           "level": int(town.peak_level), "levelName": town.peak_level.name.title()})
             if len(ruins) >= 30:
                 break
-        return {"conflicts": wars, "bonds": bonds, "outbreaks": outbreaks, "ruins": ruins}
+        house_list: List[int] = []  # x, y, colour index per house (config.settlements.houses)
+        for town in standing:
+            idx = self._index_for(town.group_id)
+            for hx, hy in town.houses:
+                house_list.extend((hx, hy, idx))
+        return {"conflicts": wars, "bonds": bonds, "outbreaks": outbreaks, "ruins": ruins,
+                "houseList": house_list}
 
     def snapshot(self, since_day: int = -1) -> Dict[str, Any]:
         """Everything the page needs to draw one frame."""
