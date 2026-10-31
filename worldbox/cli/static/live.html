@@ -723,6 +723,7 @@ function render(){
         if(y3-1<0||overlayRows[y3-1][x3]!==o){ctx.moveTo(X,Y);ctx.lineTo(X+scale,Y)}
         ctx.stroke()}}
   }
+  drawFields(x0,x1,y0,y1);
   if(lastState)drawEntities(lastState);
   if((tool||planting)&&hover)drawToolPreview();
   if(fx.length)drawFx();
@@ -747,38 +748,42 @@ function drawToolPreview(){
 function drawEntities(st){
   var grey="hsl(30 8% 55%)";
   var bs=Math.max(1,Math.round(scale/8));
+  drawTies(st);drawRuins(st,bs);
   var L=st.settlementList,labels=[];
   for(var k=0;k<L.length;k+=4){
     var sx=ox+L[k]*scale,sy=oy+L[k+1]*scale;
     if(sx<-80||sy<-80||sx>innerWidth+80||sy>innerHeight+80)continue;
     var col=tribeColour(L[k+3])||grey;
+    drawHouses(L[k],L[k+1],civByXY[L[k]+","+L[k+1]],col,bs);
     var sp=buildingSprite(L[k+2],col,bs,frame);
     ctx.drawImage(sp,Math.round(sx+scale/2-sp.width/2),Math.round(sy+scale-sp.height+bs));
     var info=civByXY[L[k]+","+L[k+1]];
     if(info&&scale>=13&&(L[k+2]>=1||scale>=22))labels.push([sx+scale/2,sy+scale+bs-buildingArtHeight(L[k+2])*bs-3,info.town,col,L[k+2]]);
   }
-  var A=st.agents,stride=A.length%4===0?4:3,occ={};
+  var A=st.agents,stride=A.length%4===0?4:3,occ={},IDS=st.agentIds,tt=tweenT();
   var small=scale<9,ps=Math.max(1,Math.round(scale/9));
   for(var j=0;j<A.length;j+=stride){
-    var tx=A[j],ty=A[j+1],axp=ox+tx*scale,ayp=oy+ty*scale;
+    var id=IDS?IDS[j/stride]:-1,tx=A[j],ty=A[j+1],pos=IDS?agentPos(id,tx,ty):[tx,ty];
+    var axp=ox+pos[0]*scale,ayp=oy+pos[1]*scale,fade=IDS&&tween.born[id]?tt:1;
     if(axp<-20||ayp<-20||axp>innerWidth+20||ayp>innerHeight+20)continue;
     var key=tx+","+ty,n=occ[key]=(occ[key]||0)+1;
     var col2=tribeColour(A[j+2])||grey;
     var off=[[0,0],[-.22,-.1],[.22,-.1],[-.12,.18],[.12,.18]][(n-1)%5];
+    ctx.globalAlpha=fade;
     if(small){
       var d=Math.max(2,Math.round(scale*.45));
       ctx.fillStyle="#16110d";ctx.fillRect(Math.round(axp+scale/2-d/2)-1,Math.round(ayp+scale/2-d/2)-1,d+2,d+2);
       ctx.fillStyle=col2;ctx.fillRect(Math.round(axp+scale/2-d/2),Math.round(ayp+scale/2-d/2),d,d);
-      continue;
+      ctx.globalAlpha=1;continue;
     }
     var look=stride===4?A[j+3]:1;
     /* Walk frames only for people who actually moved since the last snapshot
        (same slot in the array; a rare shuffle after a death just skips a step). */
-    var moved=prevAgents&&prevAgents.length>j+1&&(prevAgents[j]!==tx||prevAgents[j+1]!==ty);
+    var moved=IDS?(tt<1&&(pos[0]!==tx||pos[1]!==ty)):(prevAgents&&prevAgents.length>j+1&&(prevAgents[j]!==tx||prevAgents[j+1]!==ty));
     var p=personSprite(look,col2,A[j+2],ps,ART.ok&&moved?1+((frame+j/stride)&1):0);
     var px=Math.round(axp+scale/2-p.width/2+off[0]*scale),py=Math.round(ayp+scale-p.height+off[1]*scale);
-    ctx.globalAlpha=.28;ctx.fillStyle="#000";ctx.fillRect(px+ps,py+p.height-ps,p.width-2*ps,ps);ctx.globalAlpha=1;
-    ctx.drawImage(p,px,py);
+    ctx.globalAlpha=.28*fade;ctx.fillStyle="#000";ctx.fillRect(px+ps,py+p.height-ps,p.width-2*ps,ps);ctx.globalAlpha=fade;
+    ctx.drawImage(p,px,py);ctx.globalAlpha=1;
   }
   ctx.font="600 "+(scale>=24?11:10)+"px "+tok("--mono");ctx.textAlign="center";ctx.textBaseline="bottom";
   labels.forEach(function(l){
@@ -788,7 +793,108 @@ function drawEntities(st){
     ctx.fillStyle="#ECF1EA";ctx.fillText(l[2],l[0]+1,y+h-2);
   });
   drawLLMMarkers(st,bs);
+  drawOutbreaks(st,bs);
+  drawInventions(st);
   drawFeatured(st);
+}
+/* Fields: tiles farmers have cultivated (fertility above the wild 1.0),
+   from the same data as the Fertility layer, refreshed every few seconds. */
+var fieldRows=null;
+function loadFields(){fetch("/overlay?kind=fertility").then(function(r){return r.json()}).then(function(d){fieldRows=d.rows;render()}).catch(function(){})}
+var CROP=["............","..y..y..y...",".yGy.yGy.yG.","..g..g..g...","..g..g..g...","dddddddddddd"],
+    CROP_PAL={y:"#F0CF62",G:"#B8952F",g:"#6FAE4A",d:"#7A5A34"};
+function drawFields(x0,x1,y0,y1){
+  if(!fieldRows||scale<4)return;
+  var S=Math.ceil(scale),ps=Math.max(1,Math.floor(scale/12)),cr=scale>=10?sprite(CROP,CROP_PAL,ps):null;
+  for(var y=y0;y<y1;y++)for(var x=x0;x<x1;x++){
+    var v=fieldRows[y]&&fieldRows[y][x];if(!(v>=1.2)||terrain[y][x]!=="1")continue;
+    var X=Math.floor(ox+x*scale),Y=Math.floor(oy+y*scale),a=Math.min(.55,.18+(v-1.2)*.35);
+    ctx.globalAlpha=a;ctx.fillStyle="#8A6A3A";ctx.fillRect(X,Y,S,S);
+    ctx.fillStyle="#D9B95A";for(var r=1;r<4;r++)ctx.fillRect(X,Y+Math.floor(S*r/4),S,Math.max(1,Math.floor(S/12)));
+    ctx.globalAlpha=1;
+    if(cr)ctx.drawImage(cr,Math.round(X+S/2-cr.width/2),Math.round(Y+S-cr.height));
+  }
+}
+/* Houses: the game keeps one building per settlement, not houses. As a
+   picture of its size, a few huts are drawn around it: one per 6 people
+   (up to 12), on walkable tiles chosen by a fixed hash, so they do not jump. */
+var HUT=["...R...","..RRR..",".RrRrR.","RRRRRRR",".wwDww.",".wwDww."];
+function drawHouses(sx,sy,info,col,bs){
+  if(!info||scale<6)return;
+  var n=Math.min(12,Math.floor((info.pop||0)/6));if(!n)return;
+  var spots=[];
+  for(var dy=-3;dy<=3;dy++)for(var dx=-3;dx<=3;dx++){if(!dx&&!dy)continue;var c=code(sx+dx,sy+dy);if(c!==1&&c!==2)continue;
+    spots.push([sx+dx,sy+dy,hash(sx+dx,sy+dy,151)+Math.max(Math.abs(dx),Math.abs(dy))*.6])}
+  spots.sort(function(a,b){return a[2]-b[2]});spots=spots.slice(0,n).sort(function(a,b){return a[1]-b[1]});
+  var hut=sprite(HUT,{R:col,r:shade(col,-22),w:"#D7C49A",D:"#5A3D22"},bs);
+  spots.forEach(function(p){var X=ox+p[0]*scale,Y=oy+p[1]*scale;
+    ctx.drawImage(hut,Math.round(X+scale/2-hut.width/2+(hash(p[0],p[1],152)-.5)*scale*.3),Math.round(Y+scale-hut.height-1))});
+}
+/* Inventions: the latest ones float over the inventor's home for ~90 days. */
+function drawInventions(st){
+  var D=st.discoveries||[];if(!D.length)return;
+  var byName={};(st.civs||[]).forEach(function(c){byName[c.name]=c});
+  var stack={},ic=icon("bulb",2);
+  ctx.font="600 10px "+tok("--mono");ctx.textAlign="left";ctx.textBaseline="middle";
+  D.forEach(function(d){var age=lastDay-d.day;if(age>90||age<0)return;var c=byName[d.tribe];if(!c)return;
+    var k=c.x+","+c.y,i=stack[k]=(stack[k]||0)+1;
+    var cx=ox+(c.x+.5)*scale,top=oy+c.y*scale-Math.max(30,scale*2.2)-(i-1)*20;
+    var t=d.name,tw=ctx.measureText(t).width,w=tw+ic.width+12,h=18,x=Math.round(cx-w/2),y=Math.round(top-h);
+    ctx.globalAlpha=age>60?.55:1;
+    ctx.fillStyle="rgba(30,24,8,.92)";ctx.fillRect(x,y,w,h);ctx.strokeStyle="#E8BC52";ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,w-1,h-1);
+    ctx.drawImage(ic,x+3,Math.round(y+(h-ic.height)/2));ctx.fillStyle="#FFE9A8";ctx.fillText(t,x+ic.width+7,y+h/2+1);
+    ctx.globalAlpha=1});
+}
+/* What happens between places (LiveState._world_view): wars and friendly
+   ties between tribes, running epidemics, ruins of tribes that died out. */
+var RUIN=["..s......s..",".sS.....sSs.",".sS..s..sSs.","sSSs.Ss.sSSs","sSSSsSSsSSSs","dddddddddddd"],
+    RUIN_PAL={s:"#A9A496",S:"#6E6A62",d:"#45413A"},
+    CLOUD=["...pppp...",".pppPPppp.","pppPPPPppp","ppPPkPPkpp",".pppPPPPp.","..p.p..p.."],
+    CLOUD_PAL={p:"#9B7FD1",P:"#C6A9EE",k:"#2A1F3D"};
+function tileCentre(x,y){return [ox+(x+.5)*scale,oy+(y+.5)*scale]}
+function drawTies(st){
+  ctx.save();ctx.lineCap="round";
+  (st.bonds||[]).forEach(function(b){var a=tileCentre(b.ax,b.ay),c=tileCentre(b.bx,b.by);
+    ctx.strokeStyle="rgba(109,203,142,.55)";ctx.lineWidth=2;ctx.setLineDash([2,6]);
+    ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(c[0],c[1]);ctx.stroke()});
+  (st.conflicts||[]).forEach(function(w){var a=tileCentre(w.ax,w.ay),c=tileCentre(w.bx,w.by);
+    ctx.setLineDash([10,7]);ctx.lineWidth=5;ctx.strokeStyle="rgba(20,8,6,.55)";
+    ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(c[0],c[1]);ctx.stroke();
+    ctx.lineWidth=2.5;ctx.strokeStyle="#EE7655";ctx.stroke()});
+  ctx.restore();
+  ctx.font="600 10px "+tok("--mono");ctx.textAlign="center";ctx.textBaseline="top";
+  (st.conflicts||[]).forEach(function(w){var a=tileCentre(w.ax,w.ay),c=tileCentre(w.bx,w.by),mx=(a[0]+c[0])/2,my=(a[1]+c[1])/2;
+    var ic=icon("swords",2);
+    ctx.fillStyle="rgba(30,10,8,.9)";ctx.fillRect(Math.round(mx-ic.width/2-4),Math.round(my-ic.height/2-4),ic.width+8,ic.height+8);
+    ctx.strokeStyle="#EE7655";ctx.lineWidth=1.5;ctx.strokeRect(Math.round(mx-ic.width/2-4)+.5,Math.round(my-ic.height/2-4)+.5,ic.width+7,ic.height+7);
+    ctx.drawImage(ic,Math.round(mx-ic.width/2),Math.round(my-ic.height/2));
+    if(scale>=10){var t="War · "+(lastDay-w.since)+"d · "+w.dead+" dead";
+      ctx.fillStyle="rgba(30,10,8,.85)";var tw=ctx.measureText(t).width;ctx.fillRect(Math.round(mx-tw/2-4),Math.round(my+ic.height/2+6),tw+8,14);
+      ctx.fillStyle="#FFB7A6";ctx.fillText(t,mx,Math.round(my+ic.height/2+8))}});
+}
+function drawRuins(st,bs){
+  var R=st.ruins;if(!R||!R.length)return;
+  var sp=sprite(RUIN,RUIN_PAL,Math.max(1,bs));
+  ctx.font="600 10px "+tok("--mono");ctx.textAlign="center";ctx.textBaseline="bottom";
+  R.forEach(function(r){var X=ox+r.x*scale,Y=oy+r.y*scale;
+    if(X<-60||Y<-60||X>innerWidth+60||Y>innerHeight+60)return;
+    ctx.globalAlpha=.9;ctx.drawImage(sp,Math.round(X+scale/2-sp.width/2),Math.round(Y+scale-sp.height));ctx.globalAlpha=1;
+    if(scale>=13){var t="Ruins of "+r.name;ctx.fillStyle="rgba(10,14,12,.75)";var tw=ctx.measureText(t).width;
+      ctx.fillRect(Math.round(X+scale/2-tw/2-4),Math.round(Y+scale-sp.height-16),tw+8,14);
+      ctx.fillStyle="#B9B4A6";ctx.fillText(t,X+scale/2,Math.round(Y+scale-sp.height-3))}});
+}
+function drawOutbreaks(st,bs){
+  var O=st.outbreaks;if(!O||!O.length)return;
+  var cs=Math.max(2,bs+1),sp=ART.ok?propSprite(6,cs):sprite(CLOUD,CLOUD_PAL,cs);
+  ctx.font="600 10px "+tok("--mono");ctx.textAlign="center";ctx.textBaseline="bottom";
+  O.forEach(function(o){var c=tileCentre(o.x,o.y);
+    if(c[0]<-80||c[1]<-80||c[0]>innerWidth+80||c[1]>innerHeight+80)return;
+    var r=Math.max(10,scale*2.2);
+    ctx.globalAlpha=.16;ctx.fillStyle="#B994E6";ctx.beginPath();ctx.arc(c[0],c[1],r,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;
+    var bob=frame?1:0;ctx.drawImage(sp,Math.round(c[0]-sp.width/2),Math.round(c[1]-sp.height-scale*.4-bob));
+    var t=o.disease+" · "+o.ill+" ill"+(o.dead?" · "+o.dead+" dead":"");
+    ctx.fillStyle="rgba(26,16,40,.88)";var tw=ctx.measureText(t).width,ty=Math.round(c[1]-sp.height-scale*.4-6);
+    ctx.fillRect(Math.round(c[0]-tw/2-4),ty-13,tw+8,14);ctx.fillStyle="#E2D3FA";ctx.fillText(t,c[0],ty)});
 }
 /* People marked from outside (LiveState.feature): a gold ring on their tile
    and a name plate above them at every zoom; "king" gets a crown. */
@@ -797,13 +903,13 @@ function drawFeatured(st){
   var F=st.featured;if(!F||!F.length)return;
   ctx.font="700 11px "+tok("--mono");ctx.textAlign="left";ctx.textBaseline="middle";
   F.forEach(function(f){
-    var cx=ox+(f.x+.5)*scale,cy=oy+(f.y+.5)*scale;
+    var fp=agentPos(f.id,f.x,f.y),cx=ox+(fp[0]+.5)*scale,cy=oy+(fp[1]+.5)*scale;
     if(cx<-140||cy<-60||cx>innerWidth+140||cy>innerHeight+60)return;
     var pulse=focusPulse&&focusPulse.id===f.id&&Date.now()<focusPulse.until;
     ctx.strokeStyle="#F5CD4A";ctx.lineWidth=pulse?3:2;ctx.beginPath();
     ctx.arc(cx,cy,Math.max(5,scale*(pulse?1.1:.7)),0,Math.PI*2);ctx.stroke();
     var cr=f.kind==="king"?sprite(CROWN,CROWN_PAL,2):null,tw=ctx.measureText(f.label).width;
-    var h=17,w=tw+12+(cr?cr.width+5:0),x=Math.round(cx-w/2),y=Math.round(oy+f.y*scale-h-Math.max(6,scale*.9));
+    var h=17,w=tw+12+(cr?cr.width+5:0),x=Math.round(cx-w/2),y=Math.round(oy+fp[1]*scale-h-Math.max(6,scale*.9));
     ctx.fillStyle="rgba(24,18,6,.92)";ctx.fillRect(x,y,w,h);
     ctx.strokeStyle="#F5CD4A";ctx.lineWidth=1.5;ctx.strokeRect(x+.5,y+.5,w-1,h-1);
     ctx.fillStyle="#F5CD4A";ctx.beginPath();ctx.moveTo(cx-4,y+h);ctx.lineTo(cx+4,y+h);ctx.lineTo(cx,y+h+4);ctx.fill();
@@ -859,6 +965,10 @@ function drawMini(){
       mctx.fillStyle=c;mctx.fillRect(A[j]*sx,A[j+1]*sy,Math.max(1.5,sx),Math.max(1.5,sy))}
     var L=lastState.settlementList;mctx.fillStyle="#fff";
     for(var k=0;k<L.length;k+=4)mctx.fillRect(L[k]*sx-1,L[k+1]*sy-1,3,3);
+    mctx.lineWidth=1.5;mctx.strokeStyle="#EE7655";
+    (lastState.conflicts||[]).forEach(function(w){mctx.beginPath();mctx.moveTo(w.ax*sx,w.ay*sy);mctx.lineTo(w.bx*sx,w.by*sy);mctx.stroke()});
+    mctx.fillStyle="#C6A9EE";(lastState.outbreaks||[]).forEach(function(o){mctx.fillRect(o.x*sx-2,o.y*sy-2,5,5)});
+    mctx.fillStyle="#8C877B";(lastState.ruins||[]).forEach(function(r){mctx.fillRect(r.x*sx-1,r.y*sy-1,3,3)});
     (lastState.featured||[]).forEach(function(f){var mx=f.x*sx,my=f.y*sy;
       mctx.fillStyle="#16110d";mctx.fillRect(mx-3,my-3,7,7);mctx.fillStyle="#F5CD4A";mctx.fillRect(mx-2,my-2,5,5)})}
   var vx=-ox/scale*sx,vy=-oy/scale*sy,vw=innerWidth/scale*sx,vh=innerHeight/scale*sy;
@@ -1084,6 +1194,15 @@ function emptyInspect(){
   h+='</div><div class="section">Settlements</div><div class="legend" style="grid-template-columns:repeat(5,1fr)">';
   ["Camp","Hamlet","Village","Town","City"].forEach(function(n,i){
     h+='<div class="role"><img class="px" alt="" style="width:auto;height:22px" src="'+buildingSprite(i,tribe,1,0).toDataURL()+'"><span>'+n+'</span></div>'});
+  h+='</div><div class="section">On the map</div><div class="legend mapkey">';
+  var war=document.createElement("canvas");war.width=34;war.height=12;var wg=war.getContext("2d");
+  wg.setLineDash([6,4]);wg.lineWidth=2.5;wg.strokeStyle="#EE7655";wg.beginPath();wg.moveTo(1,6);wg.lineTo(33,6);wg.stroke();
+  var tie=document.createElement("canvas");tie.width=34;tie.height=12;var tg=tie.getContext("2d");
+  tg.setLineDash([2,5]);tg.lineCap="round";tg.lineWidth=2;tg.strokeStyle="#6DCB8E";tg.beginPath();tg.moveTo(1,6);tg.lineTo(33,6);tg.stroke();
+  var cloud=ART.ok?propSprite(6,2):sprite(CLOUD,CLOUD_PAL,2);
+  [[sprite(CROP,CROP_PAL,2).toDataURL(),"Fields"],[sprite(HUT,{R:tribe,r:shade(tribe,-22),w:"#D7C49A",D:"#5A3D22"},2).toDataURL(),"Houses"],
+   [icon("bulb",2).toDataURL(),"Invention"],[war.toDataURL(),"War"],[tie.toDataURL(),"Friends"],[cloud.toDataURL(),"Epidemic"],[sprite(RUIN,RUIN_PAL,2).toDataURL(),"Ruins"]].forEach(function(k){
+    h+='<div class="role"><img class="px" alt="" style="width:auto;height:18px" src="'+k[0]+'"><span>'+k[1]+'</span></div>'});
   $("insp").innerHTML=h+'</div>';
 }
 function showInspect(d){
@@ -1337,8 +1456,25 @@ function showRate(s){
   el.textContent=((s.day-a[1])/((now-a[0])/1000)).toFixed(1)+" d/s";
 }
 var prevAgents=null;
+/* Several sim days can pass between two polls (1x is ~8), and a person moves
+   one tile a day, so drawing only the new position made people jump several
+   tiles. Instead each one walks from where it was drawn to where it is now
+   over the next ~0.45 s; newborns fade in. Matched by agentIds. */
+var tween={from:{},born:{},start:0,dur:450},animating=false;
+function tweenT(){return Math.min(1,(performance.now()-tween.start)/tween.dur)}
+function agentPos(id,x,y){var f=tween.from[id];if(!f)return [x,y];var t=tweenT();return [f[0]+(x-f[0])*t,f[1]+(y-f[1])*t]}
+function retarget(s){
+  var from={},born={},old=lastState;
+  if(old&&old.agentIds){var A=old.agents,st=A.length%4===0?4:3,I=old.agentIds;
+    for(var i=0;i<I.length;i++)from[I[i]]=agentPos(I[i],A[i*st],A[i*st+1])}
+  if(s.agentIds&&old)s.agentIds.forEach(function(id){if(!from[id])born[id]=1});
+  tween={from:from,born:born,start:performance.now(),dur:450};
+  if(!animating){animating=true;requestAnimationFrame(function step(){render();
+    if(tweenT()<1)requestAnimationFrame(step);else animating=false})}
+}
 function poll(){return fetch("/state?since="+lastDay).then(function(r){return r.json()}).then(function(s){
   prevAgents=lastState?lastState.agents:null;
+  retarget(s);
   lastDay=s.day;running=s.running;lastState=s;showRate(s);
   quick(s);addLog(s.log);booted=true;frame=1-frame;render();
 }).catch(function(){})}
@@ -1357,6 +1493,7 @@ loadArt().then(function(){return fetch("/world")}).then(function(r){return r.jso
   var onSpeed=SPEEDS.filter(function(b){return b.classList.contains("on")})[0];
   if(onSpeed)fetch("/control?action=speed&value="+onSpeed.dataset.delay);
   resize();fit();emptyInspect();poll();setInterval(poll,500);loadExtensions();
+  loadFields();setInterval(loadFields,4000);
   setInterval(function(){if(layer!=="none")loadOverlay()},4000);
 });
 })();

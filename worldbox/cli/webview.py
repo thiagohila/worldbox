@@ -197,6 +197,57 @@ class LiveState:
                 ],
             }
 
+    def _world_view(self, engine: Any, ill_by_outbreak: Dict[int, int]) -> Dict[str, Any]:
+        """What happens between places, which the map would not show otherwise:
+        wars and friendly ties between tribes, running epidemics, and the ruins
+        of settlements whose tribe died out. Caller holds the lock."""
+        groups = engine.groups.active()
+
+        def home(group):
+            town = engine.settlements.for_group(group.id)
+            return (town.x, town.y) if town is not None else group.centre
+
+        wars = []
+        for war in engine.diplomacy.active_wars():
+            a, b = (engine.groups.get(gid) for gid in war.tribes)
+            if a is None or b is None:
+                continue
+            (ax, ay), (bx, by) = home(a), home(b)
+            wars.append({
+                "a": a.name, "b": b.name, "ax": ax, "ay": ay, "bx": bx, "by": by,
+                "since": war.started_day, "battles": war.battles, "dead": war.total_casualties(),
+            })
+        warring = {tuple(sorted(war.tribes)) for war in engine.diplomacy.active_wars()}
+        friendly = engine.config.culture.trade_min_relation
+        bonds = []
+        for i, a in enumerate(groups):
+            for b in groups[i + 1:]:
+                if (min(a.id, b.id), max(a.id, b.id)) in warring:
+                    continue
+                if engine.diplomacy.relation(a.id, b.id) >= friendly:
+                    (ax, ay), (bx, by) = home(a), home(b)
+                    bonds.append({"ax": ax, "ay": ay, "bx": bx, "by": by})
+        outbreaks = [
+            {
+                "x": outbreak.origin[0], "y": outbreak.origin[1], "disease": outbreak.disease.name,
+                "ill": ill_by_outbreak.get(outbreak.id, 0), "dead": outbreak.deaths,
+                "since": outbreak.started_day,
+            }
+            for outbreak in engine.diseases.active_outbreaks()
+        ]
+        standing = engine.settlements.active()
+        ruins = []
+        for town in reversed(engine.settlements.abandoned[-60:]):
+            if any(max(abs(town.x - s.x), abs(town.y - s.y)) <= 2 for s in standing):
+                continue  # Built over: the new town is what stands there.
+            if any(max(abs(town.x - r["x"]), abs(town.y - r["y"])) <= 1 for r in ruins):
+                continue
+            ruins.append({"x": town.x, "y": town.y, "name": town.name,
+                          "level": int(town.peak_level), "levelName": town.peak_level.name.title()})
+            if len(ruins) >= 30:
+                break
+        return {"conflicts": wars, "bonds": bonds, "outbreaks": outbreaks, "ruins": ruins}
+
     def snapshot(self, since_day: int = -1) -> Dict[str, Any]:
         """Everything the page needs to draw one frame."""
         with self.runner.lock:
@@ -209,14 +260,19 @@ class LiveState:
                 if group.chieftain_id is not None
             }
             agents: List[int] = []
+            agent_ids: List[int] = []  # Same order as ``agents``: lets the page tween each person.
             featured: List[Dict[str, Any]] = []
+            ill_by_outbreak: Dict[int, int] = {}
             for agent in engine.agents:
+                if agent.infection is not None and agent.outbreak_id is not None:
+                    ill_by_outbreak[agent.outbreak_id] = ill_by_outbreak.get(agent.outbreak_id, 0) + 1
                 mark = self.featured.get(agent.id) if self.featured else None
                 if mark is not None:
                     featured.append({
                         "id": agent.id, "label": mark["label"], "kind": mark["kind"],
                         "x": agent.x, "y": agent.y, "color": self._index_for(agent.group_id),
                     })
+                agent_ids.append(agent.id)
                 agents.extend(
                     (
                         agent.x,
@@ -233,6 +289,7 @@ class LiveState:
                      self._index_for(settlement.group_id))
                 )
 
+            world_view = self._world_view(engine, ill_by_outbreak)
             fresh = [entry for entry in self.log if entry["d"] > since_day][-60:]
             capacity = stats.food_capacity or 1.0
             from ..ai.client import ENV_KEY, OPENAI_ENV_KEY, available_houses, is_available
@@ -287,8 +344,10 @@ class LiveState:
                 "hunger": round(stats.average_hunger, 1),
                 "food": round(stats.total_food / capacity, 3),
                 "agents": agents,
+                "agentIds": agent_ids,
                 "settlementList": settlements,
                 "featured": featured,
+                **world_view,
                 "log": fresh,
                 "discoveries": list(engine.discoveries[-16:]),
                 "civs": civs,

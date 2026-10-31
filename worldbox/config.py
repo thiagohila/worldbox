@@ -465,8 +465,10 @@ class AIConfig:
     min_tribe_size: int = 4
 
     # Custom crafts proposed by a mind, paid for with research points.
+    # Raised from 8 to 100 (2026-10-30) to let LLM tribes run wild; combat and
+    # disease bonuses stay capped elsewhere, food/research/birth ones stack.
     allow_inventions: bool = True
-    max_custom_techs: int = 8
+    max_custom_techs: int = 100
 
     # --- cost control -------------------------------------------------------
     # think_interval_days is in sim days, so at high speed a tribe would call
